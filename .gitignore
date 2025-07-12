@@ -12,4 +12,3 @@ __pycache__
 .env.production
 DEPLOY.md
 utils/__pycache__
-README.md
