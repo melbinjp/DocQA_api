@@ -1,9 +1,13 @@
 FROM python:3.10-slim
 
+ENV TRANSFORMERS_CACHE=/tmp/hf_cache
+
 WORKDIR /app
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+
+RUN mkdir -p /tmp/hf_cache
 
 COPY . ./
 
