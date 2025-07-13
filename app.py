@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
@@ -36,6 +37,20 @@ manifest = {}
 
 # Create FastAPI app
 app = FastAPI(title="Chat with a Doc")
+
+# Allow the static frontend (hosted on GitHub Pages or your custom domain) to
+# call this API from the browser.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://melbinjp.github.io",  # GitHub Pages domain
+        "https://wecanuseai.com",      # Custom domain where the iframe lives
+        "http://localhost:5500",       # Local dev server – adjust / remove as needed
+        "http://127.0.0.1:5500"
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Path to UI
 UI_PATH = pathlib.Path(__file__).parent / "ui.html"
