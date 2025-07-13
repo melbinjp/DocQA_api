@@ -5,7 +5,7 @@ import json
 import pathlib
 from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 import google.generativeai as genai
@@ -51,8 +51,22 @@ class URLPayload(BaseModel):
     url: str
 
 @app.post("/ingest")
-async def ingest(file: Optional[UploadFile] = File(None), payload: Optional[URLPayload] = Body(None)):
+async def ingest(request: Request, file: Optional[UploadFile] = File(None), payload: Optional[URLPayload] = Body(None)):
     """Upload a document or URL"""
+    # FastAPI expects multipart when an UploadFile parameter is present. If the client
+    # sent raw JSON (Content-Type: application/json) the automatic parsing above
+    # leaves `payload` as None. To support both, attempt to parse JSON manually
+    # before rejecting the request.
+    if not file and not payload:
+        # Only try to parse JSON if the content type contains "application/json"
+        if request.headers.get("content-type", "").startswith("application/json"):
+            try:
+                body = await request.json()
+                if isinstance(body, dict) and "url" in body:
+                    payload = URLPayload(url=body["url"])
+            except Exception:
+                pass
+
     if not file and not payload:
         raise HTTPException(400, "Provide a file or URL")
     
@@ -67,7 +81,15 @@ async def ingest(file: Optional[UploadFile] = File(None), payload: Optional[URLP
         source_name = file.filename
     else:
         import requests
-        resp = requests.get(payload.url, timeout=10)
+        # Fetch the URL with a browser-like User-Agent so sites like Wikipedia don't block us
+        try:
+            resp = requests.get(payload.url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (GeminiRAG)"})
+        except Exception as e:
+            raise HTTPException(400, f"Error fetching URL: {str(e)}")
+
+        if resp.status_code != 200:
+            raise HTTPException(400, f"Could not fetch URL (status {resp.status_code})")
+
         if len(resp.content) > 5_000_000:
             raise HTTPException(413, "Content too large")
         text = load_source(resp.content, "url")
@@ -109,7 +131,8 @@ async def query(q: str):
     top_indices = np.argsort(similarities)[-3:][::-1]
     
     # Build context
-    context_texts = [texts[i] for i in top_indices if similarities[i] > 0.3]
+    # Slightly lower the similarity threshold so we don't miss relevant chunks
+    context_texts = [texts[i] for i in top_indices if similarities[i] > 0.15]
     
     if not context_texts:
         return {"answer": "No relevant information found.", "sources": []}
