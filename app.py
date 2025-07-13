@@ -35,7 +35,7 @@ doc_ids = []
 manifest = {}
 
 # Create FastAPI app
-app = FastAPI(title="Gemini RAG Demo")
+app = FastAPI(title="Chat with a Doc")
 
 # Path to UI
 UI_PATH = pathlib.Path(__file__).parent / "ui.html"
@@ -45,7 +45,7 @@ async def root():
     """Serve the UI"""
     if UI_PATH.exists():
         return FileResponse(UI_PATH)
-    return "<h1>Gemini RAG Demo</h1><p>Upload documents and ask questions!</p>"
+    return "<h1>Chat with a Doc</h1><p>Upload documents and ask questions!</p>"
 
 class URLPayload(BaseModel):
     url: str
