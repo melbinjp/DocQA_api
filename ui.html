@@ -3,7 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat with a Doc - Document Q&A</title>
+    <title>📄 Chat with a Doc - Document Q&A</title>
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/melbinjp/favicon/master/favicon.png">
+    <link rel="icon" type="image/svg+xml" href="https://raw.githubusercontent.com/melbinjp/favicon/master/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
     <style>
         * {
             margin: 0;
@@ -12,7 +18,7 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
@@ -446,6 +452,7 @@
     <script>
         // Global state
         let uploadedDocs = {};
+        let API_ROOT = "https://melbinjp-chat-with-a-doc.hf.space/";
 
         // Tab switching
         function switchTab(tabName) {
@@ -494,25 +501,19 @@
         // File upload handler
         async function handleFileUpload(file) {
             const maxSize = 5 * 1024 * 1024; // 5MB
-            
             if (file.size > maxSize) {
                 showStatus('error', 'File too large. Maximum size is 5MB.');
                 return;
             }
-            
             const formData = new FormData();
             formData.append('file', file);
-            
             showStatus('info', 'Uploading and processing document...');
-            
             try {
-                const response = await fetch('/ingest', {
+                const response = await fetch(`${API_ROOT}ingest`, {
                     method: 'POST',
                     body: formData
                 });
-                
                 const data = await response.json();
-                
                 if (response.ok) {
                     uploadedDocs[data.doc_id] = {
                         name: file.name,
@@ -520,10 +521,8 @@
                         uploadTime: new Date().toLocaleString()
                     };
                     showStatus('success', `✅ Document uploaded successfully! Document ID: ${data.doc_id} (${data.chunks} chunks)`);
-                    
-                    // Switch to query tab after successful upload
                     setTimeout(() => {
-                        document.querySelectorAll('.tab')[                        1].click(); // Click the query tab
+                        document.querySelectorAll('.tab')[1].click();
                     }, 2000);
                 } else {
                     showStatus('error', `Error: ${data.detail || 'Upload failed'}`);
@@ -536,30 +535,24 @@
         // URL upload handler
         async function uploadURL() {
             const url = document.getElementById('urlInput').value.trim();
-            
             if (!url) {
                 showStatus('error', 'Please enter a URL');
                 return;
             }
-            
             if (!url.startsWith('http://') && !url.startsWith('https://')) {
                 showStatus('error', 'Please enter a valid URL starting with http:// or https://');
                 return;
             }
-            
             showStatus('info', 'Fetching and processing URL...');
-            
             try {
-                const response = await fetch('/ingest', {
+                const response = await fetch(`${API_ROOT}ingest`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({ url: url })
                 });
-                
                 const data = await response.json();
-                
                 if (response.ok) {
                     uploadedDocs[data.doc_id] = {
                         name: url,
@@ -568,8 +561,6 @@
                     };
                     showStatus('success', `✅ URL content uploaded successfully! Document ID: ${data.doc_id} (${data.chunks} chunks)`);
                     document.getElementById('urlInput').value = '';
-                    
-                    // Switch to query tab
                     setTimeout(() => {
                         document.querySelectorAll('.tab')[1].click();
                     }, 2000);
@@ -584,32 +575,25 @@
         // Query submission
         async function submitQuery() {
             const query = document.getElementById('queryInput').value.trim();
-            
             if (!query) {
                 alert('Please enter a question');
                 return;
             }
-            
             if (Object.keys(uploadedDocs).length === 0) {
                 alert('Please upload at least one document first');
                 return;
             }
-            
             const submitBtn = document.getElementById('submitBtn');
             const loader = document.getElementById('queryLoader');
             const results = document.getElementById('results');
-            
             submitBtn.disabled = true;
             loader.classList.add('show');
             results.classList.remove('show');
-            
             try {
-                const response = await fetch(`/query?q=${encodeURIComponent(query)}`, {
+                const response = await fetch(`${API_ROOT}query?q=${encodeURIComponent(query)}`, {
                     method: 'GET'
                 });
-                
                 const data = await response.json();
-                
                 if (response.ok) {
                     displayResults(data);
                 } else {
@@ -730,7 +714,7 @@
         // Check API health on load
         window.addEventListener('load', async () => {
             try {
-                const response = await fetch('/health');
+                const response = await fetch(`${API_ROOT}health`);
                 const data = await response.json();
                 console.log('API Health:', data);
             } catch (error) {
