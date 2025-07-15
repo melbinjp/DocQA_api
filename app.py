@@ -24,7 +24,7 @@ if not GENAI_API_KEY:
     raise RuntimeError("Set GOOGLE_API_KEY in HF Space secrets")
 
 genai.configure(api_key=GENAI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-2.5-flash")
 
 # Small embedding model
 embed_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
@@ -44,9 +44,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://melbinjp.github.io",  # GitHub Pages domain
-        "https://wecanuseai.com",      # Custom domain where the iframe lives
-        "http://localhost:5500",       # Local dev server – adjust / remove as needed
-        "http://127.0.0.1:5500"
+        "https://wecanuseai.com"      # Custom domain where the iframe lives
+
     ],
     allow_methods=["*"],
     allow_headers=["*"],
