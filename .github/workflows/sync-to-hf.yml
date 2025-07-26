@@ -1,0 +1,54 @@
+name: Sync to Hugging Face Space
+on:
+  push:
+    branches: [main, develop, staging]  # Add your branches here
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to deploy from'
+        required: true
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - develop
+          - staging
+          - feature/mcp
+      force_push:
+        description: 'Force push to HF Space'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
+          FORCE_PUSH: ${{ github.event.inputs.force_push || 'false' }}
+        run: |
+          if [ "$FORCE_PUSH" = "true" ]; then
+            git push -f https://melbinjp:$HF_TOKEN@huggingface.co/spaces/melbinjp/chat_with_a_doc $BRANCH:main
+          else
+            git push https://melbinjp:$HF_TOKEN@huggingface.co/spaces/melbinjp/chat_with_a_doc $BRANCH:main
+          fi
+
+      - name: Show deployment info
+        run: |
+          echo "✅ Deployed from branch: ${{ github.event.inputs.branch || github.ref_name }}"
+          echo "🌐 Space URL: https://huggingface.co/spaces/melbinjp/chat_with_a_doc" 

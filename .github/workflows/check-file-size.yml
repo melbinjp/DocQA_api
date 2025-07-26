@@ -1,0 +1,25 @@
+name: Check File Size
+on:
+  pull_request:
+    branches: [main, develop, staging]
+  push:
+    branches: [main, develop, staging]
+  workflow_dispatch:
+
+jobs:
+  check-file-size:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check large files
+        uses: ActionsDesk/lfs-warning@v2.0
+        with:
+          filesizelimit: 10485760  # 10MB limit for HF Spaces
+
+      - name: Show file sizes
+        run: |
+          echo "📁 Checking file sizes..."
+          find . -type f -size +5M -exec ls -lh {} \; | head -10
+          echo "✅ File size check completed" 
