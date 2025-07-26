@@ -6,7 +6,7 @@ import pathlib
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
@@ -24,7 +24,7 @@ if not GENAI_API_KEY:
     raise RuntimeError("Set GOOGLE_API_KEY in HF Space secrets")
 
 genai.configure(api_key=GENAI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash")
+model = genai.GenerativeModel("gemini-2.0-flash-lite")
 
 # Small embedding model
 embed_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
@@ -53,6 +53,10 @@ app.add_middleware(
 
 # Path to UI
 UI_PATH = pathlib.Path(__file__).parent / "ui.html"
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse("https://melbinjp.github.io/chat_with_a_doc/")
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
