@@ -144,19 +144,9 @@ async def query(q: str):
     # Build context
     # Slightly lower the similarity threshold so we don't miss relevant chunks
     context_chunks = []
-    sources = []
     for i in top_indices:
         if similarities[i] >= threshold:
             context_chunks.append(texts[i])
-            # Find which doc this chunk belongs to
-            for doc_id_key, meta in manifest.items():
-                if f"{doc_id_key}_" in doc_ids[i]:
-                    sources.append({
-                        "doc_id": doc_id_key,
-                        "chunk": doc_ids[i],
-                        "source": meta["name"]
-                    })
-                    break
     
     if not context_chunks:
         return {"answer": "No relevant information found.", "sources": []}
@@ -168,16 +158,16 @@ async def query(q: str):
     # Improved prompt
     context = "\n\n".join(context_chunks)
     prompt = f"""Answer the following question using only the provided context. If the answer is not present, reply 'I don't know.'\n\nContext:\n{context}\n\nQuestion: {q}\n\nAnswer (cite the most relevant context):"""
-    
+
     try:
         response = model.generate_content(prompt)
         answer = response.text.strip()
     except Exception as e:
         answer = f"Error generating response: {str(e)}"
-    
+
     return {
         "answer": answer,
-        "sources": sources[:5]
+        "sources": context_chunks[:5]
     }
 
 @app.get("/health")
