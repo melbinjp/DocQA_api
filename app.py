@@ -84,8 +84,8 @@ async def ingest(request: Request, file: Optional[UploadFile] = File(None), payl
     # Load content
     if file:
         content = await file.read()
-        if len(content) > 5_000_000:  # 5MB limit
-            raise HTTPException(413, "File too large (max 5MB)")
+        if len(content) > 10_000_000:  # 10MB limit
+            raise HTTPException(413, "File too large (max 10MB)")
         text = load_source(content, pathlib.Path(file.filename).suffix)
         source_name = file.filename
     else:
@@ -99,7 +99,7 @@ async def ingest(request: Request, file: Optional[UploadFile] = File(None), payl
         if resp.status_code != 200:
             raise HTTPException(400, f"Could not fetch URL (status {resp.status_code})")
 
-        if len(resp.content) > 5_000_000:
+        if len(resp.content) > 10_000_000:
             raise HTTPException(413, "Content too large")
         text = load_source(resp.content, "url")
         source_name = payload.url
