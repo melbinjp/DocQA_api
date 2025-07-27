@@ -1,4 +1,4 @@
-"""Minimal document loaders for HF Spaces"""
+"""Minimal document loaders for Hugging Face Space DocQA"""
 import io
 from bs4 import BeautifulSoup
 import PyPDF2

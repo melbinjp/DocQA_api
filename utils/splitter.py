@@ -1,4 +1,4 @@
-"""Simple text splitter for HF Spaces"""
+"""Simple text splitter for Hugging Face Space DocQA"""
 import re
 from typing import List
 

@@ -21,7 +21,7 @@ from utils.splitter import split_text
 # Configure Gemini
 GENAI_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 if not GENAI_API_KEY:
-    raise RuntimeError("Set GOOGLE_API_KEY in HF Space secrets")
+    raise RuntimeError("Set GOOGLE_API_KEY in Hugging Face Space secrets")
 
 genai.configure(api_key=GENAI_API_KEY)
 model = genai.GenerativeModel("gemini-2.0-flash-lite")

@@ -15,7 +15,7 @@ on:
           - staging
           - feature/mcp
       force_push:
-        description: 'Force push to HF Space'
+        description: 'Force push to Hugging Face Space'
         required: false
         default: false
         type: boolean
@@ -43,12 +43,12 @@ jobs:
           FORCE_PUSH: ${{ github.event.inputs.force_push || 'false' }}
         run: |
           if [ "$FORCE_PUSH" = "true" ]; then
-            git push -f https://melbinjp:$HF_TOKEN@huggingface.co/spaces/melbinjp/chat_with_a_doc $BRANCH:main
+            git push -f https://melbinjp:$HF_TOKEN@huggingface.co/spaces/melbinjp/DocQA $BRANCH:main
           else
-            git push https://melbinjp:$HF_TOKEN@huggingface.co/spaces/melbinjp/chat_with_a_doc $BRANCH:main
+            git push https://melbinjp:$HF_TOKEN@huggingface.co/spaces/melbinjp/DocQA $BRANCH:main
           fi
 
       - name: Show deployment info
         run: |
           echo "✅ Deployed from branch: ${{ github.event.inputs.branch || github.ref_name }}"
-          echo "🌐 Space URL: https://huggingface.co/spaces/melbinjp/chat_with_a_doc" 
+          echo "🌐 Space URL: https://huggingface.co/spaces/melbinjp/DocQA" 
