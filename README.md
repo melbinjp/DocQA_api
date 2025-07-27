@@ -9,7 +9,7 @@ pinned: false
 ---
 
 
-# DocQA: Gemini RAG Microservice
+# DocQA: RAG Microservice
 
 **DocQA** is a lightweight Retrieval-Augmented Generation (RAG) microservice built with FastAPI and Google Gemini Flash. It ingests PDFs, DOCX, raw text, or web URLs, creates MiniLM embeddings (in-memory), and answers questions in a single request.
 
