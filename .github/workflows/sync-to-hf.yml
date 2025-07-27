@@ -40,7 +40,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
-          FORCE_PUSH: ${{ github.event.inputs.force_push || 'false' }}
+          FORCE_PUSH: ${{ github.event.inputs.force_push || 'true' }}
         run: |
           if [ "$FORCE_PUSH" = "true" ]; then
             git push -f https://melbinjp:$HF_TOKEN@huggingface.co/spaces/melbinjp/DocQA $BRANCH:main
