@@ -51,19 +51,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Path to UI
-UI_PATH = pathlib.Path(__file__).parent / "ui.html"
-
+# Always redirect root to the GitHub Pages UI
 @app.get("/", include_in_schema=False)
-def root():
-    return RedirectResponse("https://melbinjp.github.io/DocQA/")
-
-@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve the UI"""
-    if UI_PATH.exists():
-        return FileResponse(UI_PATH)
-    return "<h1>Chat with a Doc</h1><p>Upload documents OR ADD URLsand ask questions!</p>"
+    return RedirectResponse("https://melbinjp.github.io/DocQA/")
 
 class URLPayload(BaseModel):
     url: str
