@@ -1,4 +1,4 @@
-"""Gemini RAG Demo for Hugging Face Spaces"""
+"""QA RAG in Hugging Face Spaces"""
 import os
 import uuid
 import json
@@ -36,7 +36,7 @@ doc_ids = []
 manifest = {}
 
 # Create FastAPI app
-app = FastAPI(title="Chat with a Doc")
+app = FastAPI(title="DocQA")
 
 # Allow the static frontend (hosted on GitHub Pages or your custom domain) to
 # call this API from the browser.
@@ -56,14 +56,14 @@ UI_PATH = pathlib.Path(__file__).parent / "ui.html"
 
 @app.get("/", include_in_schema=False)
 def root():
-    return RedirectResponse("https://melbinjp.github.io/chat_with_a_doc/")
+    return RedirectResponse("https://melbinjp.github.io/docqa/")
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the UI"""
     if UI_PATH.exists():
         return FileResponse(UI_PATH)
-    return "<h1>Chat with a Doc</h1><p>Upload documents and ask questions!</p>"
+    return "<h1>Chat with a Doc</h1><p>Upload documents OR ADD URLsand ask questions!</p>"
 
 class URLPayload(BaseModel):
     url: str
