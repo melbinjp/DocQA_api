@@ -14,8 +14,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check large files
-        uses: ActionsDesk/lfs-warning@v2.0
+        uses: ActionsDesk/lfs-warning@v3.2
         with:
+          token: ${{ secrets.GH_PAT }}
           filesizelimit: 10485760  # 10MB limit for HF Spaces
 
       - name: Show file sizes
