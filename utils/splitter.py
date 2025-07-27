@@ -2,33 +2,26 @@
 import re
 from typing import List
 
-def split_text(text: str, max_chars: int = 500) -> List[str]:
-    """Split text into chunks"""
+def split_text(text: str, max_chars: int = 500, overlap: int = 100) -> List[str]:
+    """
+    Split text into overlapping chunks.
+    Each chunk is up to max_chars, and overlaps the previous by `overlap` characters.
+    """
     # Clean text
     text = re.sub(r'\s+', ' ', text).strip()
     
     if not text:
         return []
     
-    # Split by sentences
-    sentences = re.split(r'[.!?]+', text)
-    
+    # Overlapping window approach
     chunks = []
-    current_chunk = ""
-    
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-            
-        if len(current_chunk) + len(sentence) + 1 <= max_chars:
-            current_chunk += " " + sentence
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = sentence
-    
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    
+    start = 0
+    while start < len(text):
+        end = min(start + max_chars, len(text))
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end == len(text):
+            break
+        start += max_chars - overlap
     return chunks

@@ -108,7 +108,7 @@ async def ingest(request: Request, file: Optional[UploadFile] = File(None), payl
         raise HTTPException(400, "Could not extract text")
     
     # Process text
-    chunks = split_text(text, max_chars=500)[:30]  # Limit chunks
+    chunks = split_text(text, max_chars=500, overlap=100)[:30]  # Limit chunks
     
     # Store embeddings
     for i, chunk in enumerate(chunks):
@@ -137,25 +137,37 @@ async def query(q: str):
         similarities.append(sim)
     
     # Get top 3
-    top_indices = np.argsort(similarities)[-3:][::-1]
+    top_indices = np.argsort(similarities)[-5:][::-1]
+    top_sims = [similarities[i] for i in top_indices]
+    threshold = max(0.15, np.mean(top_sims) * 0.7)  # Dynamic threshold
     
     # Build context
     # Slightly lower the similarity threshold so we don't miss relevant chunks
-    context_texts = [texts[i] for i in top_indices if similarities[i] > 0.15]
+    context_chunks = []
+    sources = []
+    for i in top_indices:
+        if similarities[i] >= threshold:
+            context_chunks.append(texts[i])
+            # Find which doc this chunk belongs to
+            for doc_id_key, meta in manifest.items():
+                if f"{doc_id_key}_" in doc_ids[i]:
+                    sources.append({
+                        "doc_id": doc_id_key,
+                        "chunk": doc_ids[i],
+                        "source": meta["name"]
+                    })
+                    break
     
-    if not context_texts:
+    if not context_chunks:
         return {"answer": "No relevant information found.", "sources": []}
     
     # Generate answer
-    context = "\n\n".join(context_texts)
-    prompt = f"""Answer this question based on the context provided.
 
-Context:
-{context}
 
-Question: {q}
 
-Answer:"""
+    # Improved prompt
+    context = "\n\n".join(context_chunks)
+    prompt = f"""Answer the following question using only the provided context. If the answer is not present, reply 'I don't know.'\n\nContext:\n{context}\n\nQuestion: {q}\n\nAnswer (cite the most relevant context):"""
     
     try:
         response = model.generate_content(prompt)
@@ -165,7 +177,7 @@ Answer:"""
     
     return {
         "answer": answer,
-        "sources": context_texts[:2]
+        "sources": sources[:5]
     }
 
 @app.get("/health")
