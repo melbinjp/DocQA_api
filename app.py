@@ -56,7 +56,7 @@ UI_PATH = pathlib.Path(__file__).parent / "ui.html"
 
 @app.get("/", include_in_schema=False)
 def root():
-    return RedirectResponse("https://melbinjp.github.io/chat_with_a_doc/")
+    return RedirectResponse("https://melbinjp.github.io/DocQA/")
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
