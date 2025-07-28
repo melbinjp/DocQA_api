@@ -1,93 +1,185 @@
----
-title: DocQA
-emoji: 🤖
-colorFrom: gray
-colorTo: red
-sdk: docker
-app_port: 7860
-pinned: false
----
+# DocQA
 
-
-# DocQA: RAG Microservice
-
-**DocQA** is a lightweight Retrieval-Augmented Generation (RAG) microservice built with FastAPI and Google Gemini Flash. It ingests PDFs, DOCX, raw text, or web URLs, creates MiniLM embeddings (in-memory), and answers questions in a single request.
-
----
-
-## 🚀 Live Demo
-
-- **API on Hugging Face Spaces:** [melbinjp/DocQA](https://huggingface.co/spaces/melbinjp/DocQA)
-- **Web UI:** [docqa.wecanuseai.com](https://docqa.wecanuseai.com) ([GitHub Pages](https://melbinjp.github.io/DocQA/))
-
----
+DocQA is a question-answering tool that can answer questions about documents and URLs. It is designed to be a lightweight, standalone tool that can be easily integrated with other tools.
 
 ## Features
 
-- Upload and ingest PDF, DOCX, TXT, or web URLs
-- In-memory semantic search with MiniLM embeddings
-- FastAPI backend with OpenAPI docs
-- Google Gemini Flash for answer generation
-- Simple REST API for integration
+*   **Question Answering:** Ask questions about your documents and get answers in natural language.
+*   **URL Ingestion:** Ingest documents from URLs.
+*   **File Upload:** Upload your own documents.
+*   **MCP-Native:** DocQA is an MCP-native tool, which means it can be easily integrated with other MCP-compatible tools.
 
----
+## MCP Implementation
 
-## Usage
+DocQA implements the following MCP actions:
 
-### 1. Ingest a Document or URL
+*   **`get_capabilities`:** Returns a list of the tool's capabilities.
+*   **`query`:** Answers questions about documents.
+*   **`ingest`:** Ingests a document from a URL or content.
 
-**POST** `/ingest`
+### `get_capabilities`
 
-**Form-data:**
-- `file`: Upload a document (PDF, DOCX, TXT)
+**Request:**
 
-**or JSON:**
 ```json
 {
-  "url": "https://example.com/article"
+    "context": {
+        "request_id": "123"
+    },
+    "request": [
+        {
+            "request_id": "456",
+            "action": "get_capabilities"
+        }
+    ]
 }
 ```
 
 **Response:**
+
 ```json
 {
-  "doc_id": "abcd1234",
-  "chunks": 18
+    "request_id": "123",
+    "response": [
+        {
+            "request_id": "456",
+            "response": {
+                "status": "success",
+                "data": {
+                    "capabilities": [
+                        {
+                            "action": "query",
+                            "description": "Answer questions about documents",
+                            "input": {
+                                "q": "string"
+                            },
+                            "output": {
+                                "answer": "string",
+                                "sources": "list[string]",
+                                "chain_of_thought": "list[string]"
+                            }
+                        },
+                        {
+                            "action": "ingest",
+                            "description": "Ingest a document from a URL or content",
+                            "input": {
+                                "url": "string",
+                                "content": "string"
+                            },
+                            "output": {
+                                "doc_id": "string",
+                                "chunks": "int"
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    ]
 }
 ```
 
-### 2. Query
+### `query`
 
-**GET** `/query?q=your+question`
+**Request:**
+
+```json
+{
+    "context": {
+        "request_id": "123"
+    },
+    "request": [
+        {
+            "request_id": "456",
+            "action": "query",
+            "body": {
+                "q": "When did World War I start?"
+            }
+        }
+    ]
+}
+```
 
 **Response:**
+
 ```json
 {
-  "answer": "...",
-  "sources": ["chunk1", "chunk2"]
+    "request_id": "123",
+    "response": [
+        {
+            "request_id": "456",
+            "response": {
+                "status": "success",
+                "data": {
+                    "answer": "World War I started on July 28, 1914.",
+                    "sources": [
+                        "The war lasted until November 11, 1918."
+                    ],
+                    "chain_of_thought": [
+                        "Found 1 relevant chunks.",
+                        "Prompt: ...",
+                        "Generated answer."
+                    ]
+                }
+            }
+        }
+    ]
 }
 ```
 
----
+### `ingest`
 
-## Local Development
+**Request:**
+
+```json
+{
+    "context": {
+        "request_id": "123"
+    },
+    "request": [
+        {
+            "request_id": "456",
+            "action": "ingest",
+            "body": {
+                "url": "https://en.wikipedia.org/wiki/World_War_I"
+            }
+        }
+    ]
+}
+```
+
+**Response:**
+
+```json
+{
+    "request_id": "123",
+    "response": [
+        {
+            "request_id": "456",
+            "response": {
+                "status": "success",
+                "data": {
+                    "doc_id": "12345678",
+                    "chunks": 10
+                }
+            }
+        }
+    ]
+}
+```
+
+## How to Use
+
+1.  **Install the dependencies:**
 
 ```bash
 pip install -r requirements.txt
-uvicorn app:app --reload
 ```
 
-Or build/run with Docker (used by Hugging Face Spaces):
+2.  **Run the application:**
+
 ```bash
-docker build -t docqa .
-docker run -p 7860:7860 docqa
+uvicorn app:app --host 0.0.0.0 --port 7860
 ```
 
----
-
-## Deployment
-
-This repo is ready to be pushed to [this HF Space](https://huggingface.co/spaces/melbinjp/DocQA). The Space is configured to run inside a Docker container.
-
-### Required Secret
-Add your **Google AI Studio** API key to the Space secrets:
+3.  **Send requests to the `/mcp` endpoint.**
