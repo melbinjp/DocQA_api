@@ -28,24 +28,14 @@ if not GENAI_API_KEY:
 genai.configure(api_key=GENAI_API_KEY)
 model = genai.GenerativeModel("gemini-2.0-flash-lite")
 
+# Small embedding model
+embed_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
 # Simple in-memory storage
 vectors = []
 texts = []
 doc_ids = []
 manifest = {}
-
-# Load a pre-trained Word2Vec model
-# This is a placeholder, a real model should be trained on a large corpus
-# and saved to disk.
-sentences = [word_tokenize(text) for text in texts]
-word2vec_model = Word2Vec(sentences, min_count=1)
-
-def get_sentence_embedding(sentence):
-    words = word_tokenize(sentence.lower())
-    word_vectors = [word2vec_model.wv[word] for word in words if word in word2vec_model.wv]
-    if not word_vectors:
-        return np.zeros(word2vec_model.vector_size)
-    return np.mean(word_vectors, axis=0)
 
 # Create FastAPI app
 app = FastAPI(title="DocQA")
@@ -124,7 +114,7 @@ async def ingest(request: Request, file: Optional[UploadFile] = File(None), payl
     
     # Store embeddings
     for i, chunk in enumerate(chunks):
-        embedding = get_sentence_embedding(chunk)
+        embedding = embed_model.encode(chunk)
         vectors.append(embedding)
         texts.append(chunk)
         doc_ids.append(f"{doc_id}_{i}")
@@ -140,7 +130,7 @@ async def query(q: str):
         return {"answer": "No documents uploaded yet.", "sources": []}
     
     # Embed query
-    query_vec = get_sentence_embedding(q)
+    query_vec = embed_model.encode(q)
     
     # Compute similarities
     similarities = []
@@ -270,7 +260,7 @@ async def mcp_endpoint(request: MCPRequest):
                 continue
 
             # Embed query
-            query_vec = get_sentence_embedding(q)
+            query_vec = embed_model.encode(q)
 
             # Compute similarities
             similarities = []
@@ -425,7 +415,7 @@ async def mcp_endpoint(request: MCPRequest):
 
             # Store embeddings
             for i, chunk in enumerate(chunks):
-                embedding = get_sentence_embedding(chunk)
+                embedding = embed_model.encode(chunk)
                 vectors.append(embedding)
                 texts.append(chunk)
                 doc_ids.append(f"{doc_id}_{i}")
