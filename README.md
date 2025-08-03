@@ -9,6 +9,43 @@ DocQA is a question-answering tool that can answer questions about documents and
 *   **File Upload:** Upload your own documents.
 *   **MCP-Native:** DocQA is an MCP-native tool, which means it can be easily integrated with other MCP-compatible tools.
 
+## How to Use
+
+### As a Standalone QA App
+
+1.  **Install the dependencies:**
+
+```bash
+pip install -r requirements.txt
+```
+
+2.  **Run the application:**
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 7860
+```
+
+3.  **Use the `/ingest` and `/query` endpoints to interact with the tool.**
+
+    *   **`/ingest`:** Ingest a document from a URL or by uploading a file.
+    *   **`/query`:** Ask a question about the ingested documents.
+
+### As an MCP Server
+
+1.  **Install the dependencies:**
+
+```bash
+pip install -r requirements.txt
+```
+
+2.  **Run the application:**
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 7860
+```
+
+3.  **Send requests to the `/mcp` endpoint.**
+
 ## MCP Implementation
 
 DocQA implements the following MCP actions:
@@ -167,19 +204,3 @@ DocQA implements the following MCP actions:
     ]
 }
 ```
-
-## How to Use
-
-1.  **Install the dependencies:**
-
-```bash
-pip install -r requirements.txt
-```
-
-2.  **Run the application:**
-
-```bash
-uvicorn app:app --host 0.0.0.0 --port 7860
-```
-
-3.  **Send requests to the `/mcp` endpoint.**
