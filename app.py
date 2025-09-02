@@ -125,6 +125,10 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[QuerySource]
 
+class QueryMultiplePayload(BaseModel):
+    doc_ids: List[str] = Field(..., description="A list of document session IDs to query against.")
+    q: str = Field(..., description="The question to ask.")
+
 # --- API Endpoints ---
 @app.get("/", include_in_schema=False)
 async def root():
@@ -208,6 +212,38 @@ async def query(payload: QueryPayload) -> QueryResponse:
     relevant_sources = [chunk for chunk in retrieved_chunks if chunk['score'] > 0.5]
 
     return QueryResponse(answer=answer, sources=relevant_sources)
+
+
+@app.post("/query-multiple", response_model=QueryResponse, summary="Ask a question across multiple documents")
+async def query_multiple(payload: QueryMultiplePayload) -> QueryResponse:
+    """
+    Asks a question against a list of specified document sessions.
+    This allows for searching across multiple documents at once.
+    """
+    all_chunks = []
+    for doc_id in payload.doc_ids:
+        session = sessions.get(doc_id)
+        if session:
+            session.touch()
+            # We can add the doc_id to the source for better traceability
+            retrieved_chunks = session.query(payload.q, k=5)
+            for chunk in retrieved_chunks:
+                chunk['doc_id'] = doc_id
+            all_chunks.extend(retrieved_chunks)
+
+    # Sort all collected chunks by score to find the best ones across all docs
+    all_chunks.sort(key=lambda x: x['score'], reverse=True)
+
+    # Use the top 5 chunks from the combined list as context
+    top_chunks = all_chunks[:5]
+
+    relevant_texts = [chunk['text'] for chunk in top_chunks if chunk['score'] > 0.5]
+    answer = generate_rag_response(payload.q, relevant_texts)
+
+    relevant_sources = [chunk for chunk in top_chunks if chunk['score'] > 0.5]
+
+    return QueryResponse(answer=answer, sources=relevant_sources)
+
 
 # --- Main Execution ---
 if __name__ == "__main__":

@@ -138,3 +138,52 @@ def test_session_cleanup_logic():
 
     # Final cleanup
     sessions.clear()
+
+def test_query_multiple_documents(client, mocker):
+    """Tests querying across two different documents."""
+    mock_llm_call = mocker.patch("app.llm_model.generate_content")
+    mock_llm_call.return_value.text = "Combined answer."
+
+    # Ingest document A (about cats)
+    content_a = b"A document discussing feline behavior."
+    response_a = client.post("/ingest", files={"file": ("doc_a.txt", content_a, "text/plain")})
+    doc_id_a = response_a.json()["doc_id"]
+
+    # Ingest document B (about dogs)
+    content_b = b"An article about canine training."
+    response_b = client.post("/ingest", files={"file": ("doc_b.txt", content_b, "text/plain")})
+    doc_id_b = response_b.json()["doc_id"]
+
+    # Mock the query responses for each session
+    mocker.patch.object(
+        sessions[doc_id_a],
+        'query',
+        return_value=[{"text": "High score cat chunk", "score": 0.9}]
+    )
+    mocker.patch.object(
+        sessions[doc_id_b],
+        'query',
+        return_value=[{"text": "Low score dog chunk", "score": 0.6}]
+    )
+
+    # Query both documents
+    response_query = client.post(
+        "/query-multiple",
+        json={"doc_ids": [doc_id_a, doc_id_b], "q": "What do you know?"}
+    )
+
+    assert response_query.status_code == 200
+    query_data = response_query.json()
+
+    # Check that the answer is based on the combined context
+    assert query_data["answer"] == "Combined answer."
+    # Check that the sources include the high-scoring chunk
+    assert len(query_data["sources"]) == 2
+    assert query_data["sources"][0]["text"] == "High score cat chunk"
+    assert query_data["sources"][1]["text"] == "Low score dog chunk"
+
+    # Check that the LLM was called with the right context
+    mock_llm_call.assert_called_once()
+    prompt_arg = mock_llm_call.call_args[0][0]
+    assert "High score cat chunk" in prompt_arg
+    assert "Low score dog chunk" in prompt_arg

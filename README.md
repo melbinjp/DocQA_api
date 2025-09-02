@@ -113,3 +113,45 @@ Asks a question against a previously ingested document.
 -   **`422 Unprocessable Entity`**
     -   **Description:** Occurs if `doc_id` or `q` are missing from the request body.
     -   **Body Schema:** Standard FastAPI validation error response.
+
+---
+
+### `/query-multiple`
+
+Asks a question against a list of previously ingested documents.
+
+-   **Method:** `POST`
+-   **Description:** Takes a list of `doc_ids` and a question string (`q`). It retrieves all corresponding document sessions, performs a similarity search across all of them, and generates a single answer from the combined best context.
+
+#### Request
+-   **Headers:** `Content-Type: application/json`
+-   **Body Schema:**
+    ```json
+    {
+      "doc_ids": ["string"],
+      "q": "string"
+    }
+    ```
+-   **Example `curl`:**
+    ```bash
+    curl -X POST "http://localhost:7860/query-multiple" \
+         -H "Content-Type: application/json" \
+         -d '{"doc_ids": ["doc-id-1", "doc-id-2"], "q": "Compare the main topics"}'
+    ```
+
+#### Responses
+-   **`200 OK` (Success)**
+    -   **Description:** The response format is identical to the single `/query` endpoint, but the `sources` may come from any of the provided `doc_ids`.
+    -   **Body Schema:**
+        ```json
+        {
+          "answer": "string",
+          "sources": [
+            {
+              "text": "string",
+              "score": "float",
+              "doc_id": "string"
+            }
+          ]
+        }
+        ```
