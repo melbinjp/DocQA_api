@@ -1,206 +1,115 @@
-# DocQA
+# DocQA: Stateless Question-Answering API
 
-DocQA is a question-answering tool that can answer questions about documents and URLs. It is designed to be a lightweight, standalone tool that can be easily integrated with other tools.
+DocQA is a lightweight, session-based question-answering tool. It allows a client application to upload a document or provide a URL, and then ask questions about its content.
 
-## Features
+The API is designed to be **stateless and session-isolated**. Each ingested document is handled in a separate, in-memory session, ensuring user data is never shared or persisted.
 
-*   **Question Answering:** Ask questions about your documents and get answers in natural language.
-*   **URL Ingestion:** Ingest documents from URLs.
-*   **File Upload:** Upload your own documents.
-*   **MCP-Native:** DocQA is an MCP-native tool, which means it can be easily integrated with other MCP-compatible tools.
+## Frontend Integration Guide
 
-## How to Use
+Building a frontend for this API involves a simple two-step user workflow:
 
-### As a Standalone QA App
+1.  **Document Ingestion:** The user provides a document (either by file upload or by submitting a URL). The frontend sends this to the `/ingest` endpoint.
+2.  **Store the Session ID:** The API responds with a unique `doc_id`. The frontend **must** store this ID for the current user session (e.g., in component state, React Context, or browser local storage).
+3.  **Question Answering:** When the user asks a question, the frontend sends the question **and** the stored `doc_id` to the `/query` endpoint.
+4.  **Display Results:** The frontend displays the answer and sources from the `/query` response. If the user ingests a new document, the workflow repeats, and the old `doc_id` is replaced with the new one.
 
-1.  **Install the dependencies:**
+---
 
-```bash
-pip install -r requirements.txt
-```
+## API Reference
 
-2.  **Run the application:**
+The base URL for the application is the root of the server (e.g., `http://localhost:7860`).
 
-```bash
-uvicorn app:app --host 0.0.0.0 --port 7860
-```
+### `/ingest`
 
-3.  **Use the `/ingest` and `/query` endpoints to interact with the tool.**
+Ingests a document and prepares it for questioning.
 
-    *   **`/ingest`:** Ingest a document from a URL or by uploading a file.
-    *   **`/query`:** Ask a question about the ingested documents.
+-   **Method:** `POST`
+-   **Description:** Accepts a document via file upload (`multipart/form-data`) or a URL (`application/json`). It processes the document into text chunks, embeds them, and creates an in-memory search index.
+-   **Returns:** A unique `doc_id` which acts as the session identifier for subsequent queries.
 
-### As an MCP Server
+#### Request (File Upload)
+-   **Headers:** `Content-Type: multipart/form-data`
+-   **Body:** A form field named `file` containing the document.
+-   **Example `curl`:**
+    ```bash
+    curl -X POST "http://localhost:7860/ingest" \
+         -F "file=@/path/to/your/document.txt"
+    ```
 
-1.  **Install the dependencies:**
+#### Request (URL)
+-   **Headers:** `Content-Type: application/json`
+-   **Body Schema:**
+    ```json
+    {
+      "url": "string"
+    }
+    ```
+-   **Example `curl`:**
+    ```bash
+    curl -X POST "http://localhost:7860/ingest" \
+         -H "Content-Type: application/json" \
+         -d '{"url": "https://en.wikipedia.org/wiki/World_War_I"}'
+    ```
 
-```bash
-pip install -r requirements.txt
-```
-
-2.  **Run the application:**
-
-```bash
-uvicorn app:app --host 0.0.0.0 --port 7860
-```
-
-3.  **Send requests to the `/mcp` endpoint.**
-
-## MCP Implementation
-
-DocQA implements the following MCP actions:
-
-*   **`get_capabilities`:** Returns a list of the tool's capabilities.
-*   **`query`:** Answers questions about documents.
-*   **`ingest`:** Ingests a document from a URL or content.
-
-### `get_capabilities`
-
-**Request:**
-
-```json
-{
-    "context": {
-        "request_id": "123"
-    },
-    "request": [
+#### Responses
+-   **`200 OK` (Success)**
+    -   **Body Schema:**
+        ```json
         {
-            "request_id": "456",
-            "action": "get_capabilities"
+          "doc_id": "string",
+          "source": "string",
+          "chunks_ingested": "integer"
         }
-    ]
-}
-```
+        ```
+-   **`400 Bad Request`**
+    -   **Description:** Occurs if no file or URL is provided, if the URL is unreachable, or if the document content cannot be parsed.
+    -   **Body Schema:** `{"detail": "string"}`
+-   **`422 Unprocessable Entity`**
+    -   **Description:** Occurs if the request body is not valid JSON when `Content-Type` is `application/json`.
+    -   **Body Schema:** Standard FastAPI validation error response.
 
-**Response:**
+---
 
-```json
-{
-    "request_id": "123",
-    "response": [
+### `/query`
+
+Asks a question against a previously ingested document.
+
+-   **Method:** `POST`
+-   **Description:** Takes a `doc_id` and a question string (`q`). It retrieves the correct document session, performs a similarity search to find relevant context, and generates an answer using an LLM.
+
+#### Request
+-   **Headers:** `Content-Type: application/json`
+-   **Body Schema:**
+    ```json
+    {
+      "doc_id": "string",
+      "q": "string"
+    }
+    ```
+-   **Example `curl`:**
+    ```bash
+    curl -X POST "http://localhost:7860/query" \
+         -H "Content-Type: application/json" \
+         -d '{"doc_id": "your-stored-doc-id", "q": "What is the main topic?"}'
+    ```
+
+#### Responses
+-   **`200 OK` (Success)**
+    -   **Body Schema:**
+        ```json
         {
-            "request_id": "456",
-            "response": {
-                "status": "success",
-                "data": {
-                    "capabilities": [
-                        {
-                            "action": "query",
-                            "description": "Answer questions about documents",
-                            "input": {
-                                "q": "string"
-                            },
-                            "output": {
-                                "answer": "string",
-                                "sources": "list[string]",
-                                "chain_of_thought": "list[string]"
-                            }
-                        },
-                        {
-                            "action": "ingest",
-                            "description": "Ingest a document from a URL or content",
-                            "input": {
-                                "url": "string",
-                                "content": "string"
-                            },
-                            "output": {
-                                "doc_id": "string",
-                                "chunks": "int"
-                            }
-                        }
-                    ]
-                }
+          "answer": "string",
+          "sources": [
+            {
+              "text": "string",
+              "score": "float"
             }
+          ]
         }
-    ]
-}
-```
-
-### `query`
-
-**Request:**
-
-```json
-{
-    "context": {
-        "request_id": "123"
-    },
-    "request": [
-        {
-            "request_id": "456",
-            "action": "query",
-            "body": {
-                "q": "When did World War I start?"
-            }
-        }
-    ]
-}
-```
-
-**Response:**
-
-```json
-{
-    "request_id": "123",
-    "response": [
-        {
-            "request_id": "456",
-            "response": {
-                "status": "success",
-                "data": {
-                    "answer": "World War I started on July 28, 1914.",
-                    "sources": [
-                        "The war lasted until November 11, 1918."
-                    ],
-                    "chain_of_thought": [
-                        "Found 1 relevant chunks.",
-                        "Prompt: ...",
-                        "Generated answer."
-                    ]
-                }
-            }
-        }
-    ]
-}
-```
-
-### `ingest`
-
-**Request:**
-
-```json
-{
-    "context": {
-        "request_id": "123"
-    },
-    "request": [
-        {
-            "request_id": "456",
-            "action": "ingest",
-            "body": {
-                "url": "https://en.wikipedia.org/wiki/World_War_I"
-            }
-        }
-    ]
-}
-```
-
-**Response:**
-
-```json
-{
-    "request_id": "123",
-    "response": [
-        {
-            "request_id": "456",
-            "response": {
-                "status": "success",
-                "data": {
-                    "doc_id": "12345678",
-                    "chunks": 10
-                }
-            }
-        }
-    ]
-}
-```
+        ```
+-   **`404 Not Found`**
+    -   **Description:** Occurs if the provided `doc_id` does not correspond to an active session.
+    -   **Body Schema:** `{"detail": "Document session with doc_id '...' not found."}`
+-   **`422 Unprocessable Entity`**
+    -   **Description:** Occurs if `doc_id` or `q` are missing from the request body.
+    -   **Body Schema:** Standard FastAPI validation error response.

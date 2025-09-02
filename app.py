@@ -2,6 +2,9 @@
 import os
 import uuid
 import pathlib
+import datetime
+import asyncio
+from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any
 
 from dotenv import load_dotenv
@@ -22,16 +25,49 @@ from rag_session import RAGSession
 # Load environment variables
 load_dotenv()
 
+# --- Configuration ---
+SESSION_CLEANUP_INTERVAL_SECONDS = 300  # 5 minutes
+SESSION_TIMEOUT_MINUTES = 15
+
+# --- In-Memory Session Storage ---
+sessions: Dict[str, RAGSession] = {}
+
+# --- Background Cleanup Logic (Refactored for Testability) ---
+def _clean_sessions_once():
+    """Single pass to find and remove expired sessions."""
+    now = datetime.datetime.now()
+    expiration_time = datetime.timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+
+    expired_sessions = [
+        doc_id for doc_id, session in sessions.items()
+        if now - session.last_accessed > expiration_time
+    ]
+
+    for doc_id in expired_sessions:
+        del sessions[doc_id]
+        print(f"Cleaned up expired session: {doc_id}")
+
+async def cleanup_expired_sessions_task():
+    """The background task that runs periodically."""
+    while True:
+        _clean_sessions_once()
+        await asyncio.sleep(SESSION_CLEANUP_INTERVAL_SECONDS)
+
+# --- FastAPI Lifespan Management ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Application startup: Starting session cleanup task...")
+    asyncio.create_task(cleanup_expired_sessions_task())
+    yield
+    print("Application shutdown.")
+
 # --- App and Model Initialization ---
 app = FastAPI(
     title="DocQA",
-    description="An application for asking questions about documents using a stateless, session-based RAG architecture.",
-    version="1.0.0",
+    description="An application for asking questions about documents using a stateless, session-based RAG architecture with session timeouts.",
+    version="1.1.0",
+    lifespan=lifespan
 )
-
-# In-memory storage for user sessions.
-# This dictionary will hold RAGSession instances, keyed by a unique doc_id.
-sessions: Dict[str, RAGSession] = {}
 
 # Configure the Generative AI model
 GENAI_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -48,7 +84,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # --- Helper Functions ---
 def generate_rag_response(query: str, context_chunks: List[str]) -> str:
@@ -72,7 +107,6 @@ def generate_rag_response(query: str, context_chunks: List[str]) -> str:
         print(f"Error during LLM generation: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate a response from the language model.")
 
-
 # --- API Models ---
 class IngestResponse(BaseModel):
     doc_id: str = Field(..., description="The unique ID for the ingested document session.")
@@ -90,7 +124,6 @@ class QuerySource(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: List[QuerySource]
-
 
 # --- API Endpoints ---
 @app.get("/", include_in_schema=False)
@@ -111,14 +144,13 @@ async def ingest(
     file: Optional[UploadFile] = File(None, description="A document file to ingest."),
     url: Optional[str] = Body(None, description="URL of a document to ingest.", embed=True)
 ) -> IngestResponse:
-    # Handle cases where client sends JSON payload with Content-Type: application/json
     if not file and not url:
         try:
             body = await request.json()
             if "url" in body:
                 url = body["url"]
         except Exception:
-            pass  # Ignore if body is not valid JSON
+            pass
 
     if not file and not url:
         raise HTTPException(status_code=400, detail="You must provide either a file or a URL.")
@@ -154,7 +186,6 @@ async def ingest(
     if not chunks:
         raise HTTPException(status_code=400, detail=f"Failed to split the document into chunks: {source_name}")
 
-    # Create and store the session for this document
     session = RAGSession()
     session.ingest(chunks)
     sessions[doc_id] = session
@@ -167,16 +198,16 @@ async def query(payload: QueryPayload) -> QueryResponse:
     if not session:
         raise HTTPException(status_code=404, detail=f"Document session with doc_id '{payload.doc_id}' not found.")
 
+    session.touch()
+
     retrieved_chunks = session.query(payload.q, k=5)
 
     relevant_texts = [chunk['text'] for chunk in retrieved_chunks if chunk['score'] > 0.5]
     answer = generate_rag_response(payload.q, relevant_texts)
 
-    # Filter sources based on the same threshold for the final response
     relevant_sources = [chunk for chunk in retrieved_chunks if chunk['score'] > 0.5]
 
     return QueryResponse(answer=answer, sources=relevant_sources)
-
 
 # --- Main Execution ---
 if __name__ == "__main__":

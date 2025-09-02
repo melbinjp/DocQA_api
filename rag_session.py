@@ -1,6 +1,7 @@
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
+import datetime
 
 class RAGSession:
     """
@@ -8,8 +9,10 @@ class RAGSession:
 
     Each instance of this class handles the data for one ingested document,
     including its text chunks, embeddings, and a FAISS index for searching.
+    It also tracks its last access time for automatic cleanup.
     """
     def __init__(self):
+        self.last_accessed = datetime.datetime.now()
         # Each session gets its own model instance. This could be optimized
         # in the future by sharing a global model if memory becomes a concern.
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -83,3 +86,7 @@ class RAGSession:
                 })
 
         return results
+
+    def touch(self):
+        """Updates the last_accessed timestamp to the current time."""
+        self.last_accessed = datetime.datetime.now()
