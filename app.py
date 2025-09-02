@@ -1,720 +1,183 @@
-"""QA RAG in Hugging Face Spaces"""
+"""QA RAG application for stateless, session-based document questioning."""
 import os
 import uuid
-import json
 import pathlib
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+
 from dotenv import load_dotenv
-
-load_dotenv()
-
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
 import google.generativeai as genai
-from sentence_transformers import SentenceTransformer
-import numpy as np
 import uvicorn
+import requests
 
-# Import utilities
+# Import utilities and the session manager
 from utils.loaders import load_source
 from utils.splitter import split_text
+from utils.exceptions import DocumentLoaderError
+from rag_session import RAGSession
 
-# Configure Gemini
-GENAI_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+# Load environment variables
+load_dotenv()
+
+# --- App and Model Initialization ---
+app = FastAPI(
+    title="DocQA",
+    description="An application for asking questions about documents using a stateless, session-based RAG architecture.",
+    version="1.0.0",
+)
+
+# In-memory storage for user sessions.
+# This dictionary will hold RAGSession instances, keyed by a unique doc_id.
+sessions: Dict[str, RAGSession] = {}
+
+# Configure the Generative AI model
+GENAI_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GENAI_API_KEY:
-    raise RuntimeError("Set GOOGLE_API_KEY in Hugging Face Space secrets")
-
+    raise RuntimeError("GOOGLE_API_KEY environment variable not set.")
 genai.configure(api_key=GENAI_API_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash-lite")
+llm_model = genai.GenerativeModel("gemini-2.0-flash-lite")
 
-# Simple in-memory storage
-vectors = []
-texts = []
-doc_ids = []
-manifest = {}
-
-def simulate_embedding(text):
-    """Simulate the embedding model."""
-    return np.random.rand(384)
-
-# Create FastAPI app
-app = FastAPI(title="DocQA")
-
-# Allow the static frontend (hosted on GitHub Pages or your custom domain) to
-# call this API from the browser.
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://melbinjp.github.io",  # GitHub Pages domain
-        "https://wecanuseai.com"      # Custom domain where the iframe lives
-
-    ],
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Always redirect root to the GitHub Pages UI
-@app.get("/", include_in_schema=False)
-async def root():
-    return RedirectResponse("https://melbinjp.github.io/DocQA/")
 
-class URLPayload(BaseModel):
-    url: str
-
-@app.post("/ingest")
-async def ingest(request: Request, file: Optional[UploadFile] = File(None), payload: Optional[URLPayload] = Body(None)):
-    """Upload a document or URL"""
-    # FastAPI expects multipart when an UploadFile parameter is present. If the client
-    # sent raw JSON (Content-Type: application/json) the automatic parsing above
-    # leaves `payload` as None. To support both, attempt to parse JSON manually
-    # before rejecting the request.
-    if not file and not payload:
-        # Only try to parse JSON if the content type contains "application/json"
-        if request.headers.get("content-type", "").startswith("application/json"):
-            try:
-                body = await request.json()
-                if isinstance(body, dict) and "url" in body:
-                    payload = URLPayload(url=body["url"])
-            except Exception:
-                pass
-
-    if not file and not payload:
-        raise HTTPException(400, "Provide a file or URL")
-    
-    doc_id = uuid.uuid4().hex[:8]
-    
-    # Load content
-    if file:
-        content = await file.read()
-        if len(content) > 10_000_000:  # 10MB limit
-            raise HTTPException(413, "File too large (max 10MB)")
-        text = load_source(content, pathlib.Path(file.filename).suffix)
-        source_name = file.filename
-    else:
-        import requests
-        # Fetch the URL with a browser-like User-Agent so sites like Wikipedia don't block us
-        try:
-            resp = requests.get(payload.url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (GeminiRAG)"})
-        except Exception as e:
-            raise HTTPException(400, f"Error fetching URL: {str(e)}")
-
-        if resp.status_code != 200:
-            raise HTTPException(400, f"Could not fetch URL (status {resp.status_code})")
-
-        if len(resp.content) > 10_000_000:
-            raise HTTPException(413, "Content too large")
-        text = load_source(resp.content, "url")
-        source_name = payload.url
-    
-    if not text:
-        raise HTTPException(400, "Could not extract text")
-    
-    # Process text
-    chunks = split_text(text, max_chars=500, overlap=100)[:30]  # Limit chunks
-    
-    # Store embeddings
-    for i, chunk in enumerate(chunks):
-        embedding = simulate_embedding(chunk)
-        vectors.append(embedding)
-        texts.append(chunk)
-        doc_ids.append(f"{doc_id}_{i}")
-    
-    manifest[doc_id] = {"name": source_name, "chunks": len(chunks)}
-    
-    return {"doc_id": doc_id, "chunks": len(chunks)}
-
-@app.get("/query")
-async def query(q: str):
-    """Answer questions about documents"""
-    if not vectors:
-        return {"answer": "No documents uploaded yet.", "sources": []}
-    
-    # Embed query
-    query_vec = simulate_embedding(q)
-    
-    # Compute similarities
-    similarities = []
-    for vec in vectors:
-        sim = np.dot(query_vec, vec) / (np.linalg.norm(query_vec) * np.linalg.norm(vec))
-        similarities.append(sim)
-    
-    # Get top 3
-    top_indices = np.argsort(similarities)[-5:][::-1]
-    top_sims = [similarities[i] for i in top_indices]
-    threshold = max(0.15, np.mean(top_sims) * 0.7)  # Dynamic threshold
-    
-    # Build context
-    # Slightly lower the similarity threshold so we don't miss relevant chunks
-    context_chunks = []
-    for i in top_indices:
-        if similarities[i] >= threshold:
-            context_chunks.append(texts[i])
-    
+# --- Helper Functions ---
+def generate_rag_response(query: str, context_chunks: List[str]) -> str:
+    """Generates a response from the LLM based on the retrieved context."""
     if not context_chunks:
-        return {"answer": "No relevant information found.", "sources": []}
-    
-    # Generate answer
+        return "No relevant information found in the document to answer this question."
 
-
-
-    # Improved prompt
     context = "\n\n".join(context_chunks)
-    prompt = f"""Answer the following question using only the provided context. If the answer is not present, reply 'I don't know.'\n\nContext:\n{context}\n\nQuestion: {q}\n\nAnswer (cite the most relevant context):"""
+    prompt = (
+        "You are a helpful assistant. Answer the following question based *only* on the provided context. "
+        "If the answer is not available in the context, say 'I don't know'.\n\n"
+        f"Context:\n{context}\n\n"
+        f"Question: {query}\n\n"
+        "Answer:"
+    )
 
     try:
-        response = model.generate_content(prompt)
-        answer = response.text.strip()
+        response = llm_model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        answer = f"Error generating response: {str(e)}"
+        print(f"Error during LLM generation: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate a response from the language model.")
 
-    return {
-        "answer": answer,
-        "sources": context_chunks[:5]
-    }
 
-@app.get("/health")
+# --- API Models ---
+class IngestResponse(BaseModel):
+    doc_id: str = Field(..., description="The unique ID for the ingested document session.")
+    source: str = Field(..., description="The original source of the document (filename or URL).")
+    chunks_ingested: int = Field(..., description="The number of text chunks the document was split into.")
+
+class QueryPayload(BaseModel):
+    doc_id: str = Field(..., description="The ID of the document session to query against.")
+    q: str = Field(..., description="The question to ask.")
+
+class QuerySource(BaseModel):
+    text: str
+    score: float
+
+class QueryResponse(BaseModel):
+    answer: str
+    sources: List[QuerySource]
+
+
+# --- API Endpoints ---
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/docs")
+
+@app.get("/health", summary="Health check")
 async def health():
-    """Health check"""
+    """Provides the status of the service and the number of active document sessions."""
     return {
         "status": "ok",
-        "documents": len(manifest),
-        "chunks": len(texts)
+        "active_sessions": len(sessions)
     }
 
-# MCP Compliance
-class MCPRequest(BaseModel):
-    context: Dict[str, Any]
-    request: List[Dict[str, Any]]
+@app.post("/ingest", response_model=IngestResponse, summary="Ingest a document")
+async def ingest(
+    request: Request,
+    file: Optional[UploadFile] = File(None, description="A document file to ingest."),
+    url: Optional[str] = Body(None, description="URL of a document to ingest.", embed=True)
+) -> IngestResponse:
+    # Handle cases where client sends JSON payload with Content-Type: application/json
+    if not file and not url:
+        try:
+            body = await request.json()
+            if "url" in body:
+                url = body["url"]
+        except Exception:
+            pass  # Ignore if body is not valid JSON
 
-class MCPResponse(BaseModel):
-    request_id: str
-    response: List[Dict[str, Any]]
+    if not file and not url:
+        raise HTTPException(status_code=400, detail="You must provide either a file or a URL.")
 
-@app.post("/mcp", response_model=MCPResponse)
-async def mcp_endpoint(request: MCPRequest):
-    """MCP endpoint"""
-    responses = []
-    for req in request.request:
-        action = req.get("action")
-        if action == "get_capabilities":
-            responses.append({
-                "request_id": req.get("request_id", "unknown"),
-                "response": {
-                    "status": "success",
-                    "data": {
-                        "capabilities": [
-                            {
-                                "action": "query",
-                                "description": "Answer questions about documents",
-                                "input": {
-                                    "q": "string"
-                                },
-                                "output": {
-                                    "answer": "string",
-                                    "sources": "list[string]",
-                                    "chain_of_thought": "list[string]"
-                                }
-                            },
-                            {
-                                "action": "ingest",
-                                "description": "Ingest a document from a URL or content",
-                                "input": {
-                                    "url": "string",
-                                    "content": "string"
-                                },
-                                "output": {
-                                    "doc_id": "string",
-                                    "chunks": "int"
-                                }
-                            }
-                        ]
-                    }
-                }
-            })
-        elif action == "query":
-            q = req.get("body", {}).get("q")
-            if not q:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "error",
-                        "data": "Missing query"
-                    }
-                })
-                continue
+    doc_id = uuid.uuid4().hex
+    source_name = ""
+    content = b""
 
-            if not vectors:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "success",
-                        "data": {
-                            "answer": "No documents uploaded yet.",
-                            "sources": [],
-                            "chain_of_thought": [
-                                "No documents in knowledge base."
-                            ]
-                        }
-                    }
-                })
-                continue
+    try:
+        if file:
+            source_name = file.filename
+            content = await file.read()
+            file_ext = pathlib.Path(source_name).suffix
+            text = load_source(content, file_ext)
+        elif url:
+            source_name = url
+            headers = {"User-Agent": "Mozilla/5.0"}
+            resp = requests.get(url, timeout=15, headers=headers)
+            resp.raise_for_status()
+            content = resp.content
+            text = load_source(content, "url")
+    except DocumentLoaderError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to load document: {e}")
+    except requests.RequestException as e:
+        raise HTTPException(status_code=400, detail=f"Error fetching URL: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during ingestion: {e}")
 
-            # Embed query
-            query_vec = simulate_embedding(q)
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail=f"Could not extract any text from the source: {source_name}")
 
-            # Compute similarities
-            similarities = []
-            for vec in vectors:
-                sim = np.dot(query_vec, vec) / (np.linalg.norm(query_vec) * np.linalg.norm(vec))
-                similarities.append(sim)
+    chunks = split_text(text, max_chars=512, overlap=100)
+    if not chunks:
+        raise HTTPException(status_code=400, detail=f"Failed to split the document into chunks: {source_name}")
 
-            # Get top 3
-            top_indices = np.argsort(similarities)[-5:][::-1]
-            top_sims = [similarities[i] for i in top_indices]
-            threshold = max(0.15, np.mean(top_sims) * 0.7)  # Dynamic threshold
+    # Create and store the session for this document
+    session = RAGSession()
+    session.ingest(chunks)
+    sessions[doc_id] = session
 
-            # Build context
-            context_chunks = []
-            for i in top_indices:
-                if similarities[i] >= threshold:
-                    context_chunks.append(texts[i])
+    return IngestResponse(doc_id=doc_id, source=source_name, chunks_ingested=len(chunks))
 
-            if not context_chunks:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "success",
-                        "data": {
-                            "answer": "No relevant information found.",
-                            "sources": [],
-                            "chain_of_thought": [
-                                "No relevant chunks found in knowledge base."
-                            ]
-                        }
-                    }
-                })
-                continue
+@app.post("/query", response_model=QueryResponse, summary="Ask a question")
+async def query(payload: QueryPayload) -> QueryResponse:
+    session = sessions.get(payload.doc_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Document session with doc_id '{payload.doc_id}' not found.")
 
-            # Generate answer
-            context = "\n\n".join(context_chunks)
-            prompt = f"""Answer the following question using only the provided context. If the answer is not present, reply 'I don't know.'\n\nContext:\n{context}\n\nQuestion: {q}\n\nAnswer (cite the most relevant context):"""
+    retrieved_chunks = session.query(payload.q, k=5)
 
-            try:
-                response = model.generate_content(prompt)
-                answer = response.text.strip()
-            except Exception as e:
-                answer = f"Error generating response: {str(e)}"
+    relevant_texts = [chunk['text'] for chunk in retrieved_chunks if chunk['score'] > 0.5]
+    answer = generate_rag_response(payload.q, relevant_texts)
 
-            responses.append({
-                "request_id": req.get("request_id", "unknown"),
-                "response": {
-                    "status": "success",
-                    "data": {
-                        "answer": answer,
-                        "sources": context_chunks[:5],
-                        "chain_of_thought": [
-                            f"Found {len(context_chunks)} relevant chunks.",
-                            f"Prompt: {prompt}",
-                            f"Generated answer."
-                        ]
-                    }
-                }
-            })
-        elif action == "ingest":
-            body = req.get("body", {})
-            url = body.get("url")
-            content = body.get("content") # base64 encoded content
+    # Filter sources based on the same threshold for the final response
+    relevant_sources = [chunk for chunk in retrieved_chunks if chunk['score'] > 0.5]
 
-            if not url and not content:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "error",
-                        "data": "Missing url or content"
-                    }
-                })
-                continue
+    return QueryResponse(answer=answer, sources=relevant_sources)
 
-            doc_id = uuid.uuid4().hex[:8]
 
-            if url:
-                import requests
-                try:
-                    resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (GeminiRAG)"})
-                except Exception as e:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": f"Error fetching URL: {str(e)}"
-                        }
-                    })
-                    continue
-
-                if resp.status_code != 200:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": f"Could not fetch URL (status {resp.status_code})"
-                        }
-                    })
-                    continue
-
-                if len(resp.content) > 10_000_000:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": "Content too large"
-                        }
-                    })
-                    continue
-
-                text = load_source(resp.content, "url")
-                source_name = url
-            else: # content
-                import base64
-                try:
-                    decoded_content = base64.b64decode(content)
-                except Exception as e:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": f"Error decoding content: {str(e)}"
-                        }
-                    })
-                    continue
-
-                if len(decoded_content) > 10_000_000:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": "Content too large"
-                        }
-                    })
-                    continue
-
-                text = load_source(decoded_content, "txt") # assume txt for now
-                source_name = "file"
-
-            if not text:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "error",
-                        "data": "Could not extract text"
-                    }
-                })
-                continue
-
-            # Process text
-            chunks = split_text(text, max_chars=500, overlap=100)[:30]  # Limit chunks
-
-            # Store embeddings
-            for i, chunk in enumerate(chunks):
-                embedding = simulate_embedding(chunk)
-                vectors.append(embedding)
-                texts.append(chunk)
-                doc_ids.append(f"{doc_id}_{i}")
-
-            manifest[doc_id] = {"name": source_name, "chunks": len(chunks)}
-
-            responses.append({
-                "request_id": req.get("request_id", "unknown"),
-                "response": {
-                    "status": "success",
-                    "data": {
-                        "doc_id": doc_id,
-                        "chunks": len(chunks)
-                    }
-                }
-            })
-        else:
-            responses.append({
-                "request_id": req.get("request_id", "unknown"),
-                "response": {
-                    "status": "error",
-                    "data": f"Unknown action: {action}"
-                }
-            })
-
-    return MCPResponse(
-        request_id=request.context.get("request_id", "unknown"),
-        response=responses
-    )
-
-# MCP Compliance
-class MCPRequest(BaseModel):
-    context: Dict[str, Any]
-    request: List[Dict[str, Any]]
-
-class MCPResponse(BaseModel):
-    request_id: str
-    response: List[Dict[str, Any]]
-
-@app.post("/mcp", response_model=MCPResponse)
-async def mcp_endpoint(request: MCPRequest):
-    """MCP endpoint"""
-    responses = []
-    for req in request.request:
-        action = req.get("action")
-        if action == "get_capabilities":
-            responses.append({
-                "request_id": req.get("request_id", "unknown"),
-                "response": {
-                    "status": "success",
-                    "data": {
-                        "capabilities": [
-                            {
-                                "action": "query",
-                                "description": "Answer questions about documents",
-                                "input": {
-                                    "q": "string"
-                                },
-                                "output": {
-                                    "answer": "string",
-                                    "sources": "list[string]",
-                                    "chain_of_thought": "list[string]"
-                                }
-                            },
-                            {
-                                "action": "ingest",
-                                "description": "Ingest a document from a URL or content",
-                                "input": {
-                                    "url": "string",
-                                    "content": "string"
-                                },
-                                "output": {
-                                    "doc_id": "string",
-                                    "chunks": "int"
-                                }
-                            }
-                        ]
-                    }
-                }
-            })
-        elif action == "query":
-            q = req.get("body", {}).get("q")
-            if not q:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "error",
-                        "data": "Missing query"
-                    }
-                })
-                continue
-
-            if not vectors:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "success",
-                        "data": {
-                            "answer": "No documents uploaded yet.",
-                            "sources": [],
-                            "chain_of_thought": [
-                                "No documents in knowledge base."
-                            ]
-                        }
-                    }
-                })
-                continue
-
-            # Embed query
-            query_vec = simulate_embedding(q)
-
-            # Compute similarities
-            similarities = []
-            for vec in vectors:
-                sim = np.dot(query_vec, vec) / (np.linalg.norm(query_vec) * np.linalg.norm(vec))
-                similarities.append(sim)
-
-            # Get top 3
-            top_indices = np.argsort(similarities)[-5:][::-1]
-            top_sims = [similarities[i] for i in top_indices]
-            threshold = max(0.15, np.mean(top_sims) * 0.7)  # Dynamic threshold
-
-            # Build context
-            context_chunks = []
-            for i in top_indices:
-                if similarities[i] >= threshold:
-                    context_chunks.append(texts[i])
-
-            if not context_chunks:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "success",
-                        "data": {
-                            "answer": "No relevant information found.",
-                            "sources": [],
-                            "chain_of_thought": [
-                                "No relevant chunks found in knowledge base."
-                            ]
-                        }
-                    }
-                })
-                continue
-
-            # Generate answer
-            context = "\n\n".join(context_chunks)
-            prompt = f"""Answer the following question using only the provided context. If the answer is not present, reply 'I don't know.'\n\nContext:\n{context}\n\nQuestion: {q}\n\nAnswer (cite the most relevant context):"""
-
-            try:
-                response = model.generate_content(prompt)
-                answer = response.text.strip()
-            except Exception as e:
-                answer = f"Error generating response: {str(e)}"
-
-            responses.append({
-                "request_id": req.get("request_id", "unknown"),
-                "response": {
-                    "status": "success",
-                    "data": {
-                        "answer": answer,
-                        "sources": context_chunks[:5],
-                        "chain_of_thought": [
-                            f"Found {len(context_chunks)} relevant chunks.",
-                            f"Prompt: {prompt}",
-                            f"Generated answer."
-                        ]
-                    }
-                }
-            })
-        elif action == "ingest":
-            body = req.get("body", {})
-            url = body.get("url")
-            content = body.get("content") # base64 encoded content
-
-            if not url and not content:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "error",
-                        "data": "Missing url or content"
-                    }
-                })
-                continue
-
-            doc_id = uuid.uuid4().hex[:8]
-
-            if url:
-                import requests
-                try:
-                    resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (GeminiRAG)"})
-                except Exception as e:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": f"Error fetching URL: {str(e)}"
-                        }
-                    })
-                    continue
-
-                if resp.status_code != 200:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": f"Could not fetch URL (status {resp.status_code})"
-                        }
-                    })
-                    continue
-
-                if len(resp.content) > 10_000_000:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": "Content too large"
-                        }
-                    })
-                    continue
-
-                text = load_source(resp.content, "url")
-                source_name = url
-            else: # content
-                import base64
-                try:
-                    decoded_content = base64.b64decode(content)
-                except Exception as e:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": f"Error decoding content: {str(e)}"
-                        }
-                    })
-                    continue
-
-                if len(decoded_content) > 10_000_000:
-                    responses.append({
-                        "request_id": req.get("request_id", "unknown"),
-                        "response": {
-                            "status": "error",
-                            "data": "Content too large"
-                        }
-                    })
-                    continue
-
-                text = load_source(decoded_content, "txt") # assume txt for now
-                source_name = "file"
-
-            if not text:
-                responses.append({
-                    "request_id": req.get("request_id", "unknown"),
-                    "response": {
-                        "status": "error",
-                        "data": "Could not extract text"
-                    }
-                })
-                continue
-
-            # Process text
-            chunks = split_text(text, max_chars=500, overlap=100)[:30]  # Limit chunks
-
-            # Store embeddings
-            for i, chunk in enumerate(chunks):
-                embedding = simulate_embedding(chunk)
-                vectors.append(embedding)
-                texts.append(chunk)
-                doc_ids.append(f"{doc_id}_{i}")
-
-            manifest[doc_id] = {"name": source_name, "chunks": len(chunks)}
-
-            responses.append({
-                "request_id": req.get("request_id", "unknown"),
-                "response": {
-                    "status": "success",
-                    "data": {
-                        "doc_id": doc_id,
-                        "chunks": len(chunks)
-                    }
-                }
-            })
-        else:
-            responses.append({
-                "request_id": req.get("request_id", "unknown"),
-                "response": {
-                    "status": "error",
-                    "data": f"Unknown action: {action}"
-                }
-            })
-
-    return MCPResponse(
-        request_id=request.context.get("request_id", "unknown"),
-        response=responses
-    )
-
-# This is the key part - run the server when the script is executed
+# --- Main Execution ---
 if __name__ == "__main__":
-    # Run the FastAPI app with uvicorn
     uvicorn.run(app, host="0.0.0.0", port=7860)
