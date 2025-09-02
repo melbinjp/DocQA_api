@@ -120,6 +120,7 @@ class QueryPayload(BaseModel):
 class QuerySource(BaseModel):
     text: str
     score: float
+    doc_id: Optional[str] = None
 
 class QueryResponse(BaseModel):
     answer: str

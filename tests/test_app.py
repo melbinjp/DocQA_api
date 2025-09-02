@@ -177,10 +177,13 @@ def test_query_multiple_documents(client, mocker):
 
     # Check that the answer is based on the combined context
     assert query_data["answer"] == "Combined answer."
-    # Check that the sources include the high-scoring chunk
+
+    # Check that the sources include the high-scoring chunk and the correct doc_id
     assert len(query_data["sources"]) == 2
     assert query_data["sources"][0]["text"] == "High score cat chunk"
+    assert query_data["sources"][0]["doc_id"] == doc_id_a
     assert query_data["sources"][1]["text"] == "Low score dog chunk"
+    assert query_data["sources"][1]["doc_id"] == doc_id_b
 
     # Check that the LLM was called with the right context
     mock_llm_call.assert_called_once()
