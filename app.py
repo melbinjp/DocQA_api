@@ -11,10 +11,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 import google.generativeai as genai
 import uvicorn
 import requests
+
+from sentence_transformers import SentenceTransformer
 
 # Import utilities and the session manager
 from utils.loaders import load_source
@@ -32,7 +34,7 @@ SESSION_TIMEOUT_MINUTES = 15
 # --- In-Memory Session Storage ---
 sessions: Dict[str, RAGSession] = {}
 
-# --- Background Cleanup Logic (Refactored for Testability) ---
+# --- Background Cleanup Logic ---
 def _clean_sessions_once():
     """Single pass to find and remove expired sessions."""
     now = datetime.datetime.now()
@@ -64,10 +66,16 @@ async def lifespan(app: FastAPI):
 # --- App and Model Initialization ---
 app = FastAPI(
     title="DocQA",
-    description="An application for asking questions about documents using a stateless, session-based RAG architecture with session timeouts.",
-    version="1.2.0", # Bump version for new feature
+    description="A multilingual, stateless, session-based RAG application with session timeouts.",
+    version="1.4.0", # Final version
     lifespan=lifespan
 )
+
+# --- Global Models ---
+# Load models once at startup to avoid reloading them on every request.
+print("Loading multilingual embedding model...")
+embedding_model = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2')
+print("Embedding model loaded.")
 
 # Configure the Generative AI model
 GENAI_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -94,7 +102,8 @@ def generate_rag_response(query: str, context_chunks: List[str]) -> str:
     context = "\n\n".join(context_chunks)
     prompt = (
         "You are a helpful assistant. Answer the following question based *only* on the provided context. "
-        "If the answer is not available in the context, say 'I don't know'.\n\n"
+        "If the answer is not available in the context, say 'I don't know'. If the user asks in a language other than English, "
+        "please respond in the user's language.\n\n"
         f"Context:\n{context}\n\n"
         f"Question: {query}\n\n"
         "Answer:"
@@ -121,7 +130,7 @@ class QuerySource(BaseModel):
     text: str
     score: float
     doc_id: Optional[str] = None
-    source: Optional[str] = None # To hold the filename
+    source: Optional[str] = None
 
 class QueryResponse(BaseModel):
     answer: str
@@ -188,7 +197,8 @@ async def ingest(
     if not chunks:
         raise HTTPException(status_code=400, detail=f"Failed to split the document into chunks: {source_name}")
 
-    session = RAGSession(source=source_name)
+    # Create a new session, passing the globally loaded embedding model
+    session = RAGSession(source=source_name, embedding_model=embedding_model)
     session.ingest(chunks)
     sessions[doc_id] = session
 
@@ -198,30 +208,33 @@ async def ingest(
 async def query(payload: QueryPayload) -> QueryResponse:
     """
     Asks a question against one or more specified document sessions.
+    Handles multilingual queries by using a cross-lingual embedding model.
     """
     doc_ids_to_query = payload.doc_ids
     if isinstance(doc_ids_to_query, str):
         doc_ids_to_query = [doc_ids_to_query]
+
+    # With a multilingual model, we can use the query directly, regardless of language.
+    query_for_search = payload.q
 
     all_chunks = []
     for doc_id in doc_ids_to_query:
         session = sessions.get(doc_id)
         if session:
             session.touch()
-            retrieved_chunks = session.query(payload.q, k=5)
+            retrieved_chunks = session.query(query_for_search, k=5)
             for chunk in retrieved_chunks:
                 chunk['doc_id'] = doc_id
                 chunk['source'] = session.source
             all_chunks.extend(retrieved_chunks)
 
     all_chunks.sort(key=lambda x: x['score'], reverse=True)
-
     top_chunks = all_chunks[:5]
-
-    relevant_texts = [chunk['text'] for chunk in top_chunks if chunk['score'] > 0.5]
-    answer = generate_rag_response(payload.q, relevant_texts)
-
     relevant_sources = [chunk for chunk in top_chunks if chunk['score'] > 0.5]
+    relevant_texts = [chunk['text'] for chunk in relevant_sources]
+
+    # The LLM can handle the multilingual response generation directly
+    answer = generate_rag_response(payload.q, relevant_texts)
 
     return QueryResponse(answer=answer, sources=relevant_sources)
 

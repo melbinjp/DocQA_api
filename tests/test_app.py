@@ -99,13 +99,14 @@ def test_ingest_url_error(client, mocker):
 
 def test_session_cleanup_logic():
     """Tests the single-pass cleanup logic directly."""
+    from app import embedding_model # Import the global model for this test
     sessions.clear()
 
-    # Create sessions with sources
-    fresh_session = RAGSession(source="fresh.txt")
+    # Create sessions with sources, passing the global model
+    fresh_session = RAGSession(source="fresh.txt", embedding_model=embedding_model)
     sessions["fresh_doc"] = fresh_session
 
-    expired_session = RAGSession(source="expired.txt")
+    expired_session = RAGSession(source="expired.txt", embedding_model=embedding_model)
     expired_session.last_accessed = datetime.datetime.now() - datetime.timedelta(minutes=20)
     sessions["expired_doc"] = expired_session
 
@@ -118,3 +119,39 @@ def test_session_cleanup_logic():
     assert "expired_doc" not in sessions
 
     sessions.clear()
+
+def test_query_multilingual(client, mocker):
+    """Tests that a non-english query and document are handled correctly."""
+    mock_llm_call = mocker.patch("app.llm_model.generate_content")
+    mock_llm_call.return_value.text = "La respuesta es sobre perros." # Answer in Spanish
+
+    # 1. Ingest a Spanish document
+    spanish_content = "Un documento sobre el comportamiento canino.".encode('utf-8')
+    response_ingest = client.post("/ingest", files={"file": ("perros.txt", spanish_content, "text/plain")})
+    assert response_ingest.status_code == 200
+    doc_id = response_ingest.json()["doc_id"]
+
+    # 2. Mock the session query to return a spanish chunk
+    mocker.patch.object(
+        sessions[doc_id],
+        'query',
+        return_value=[{"text": "comportamiento canino", "score": 0.9}]
+    )
+
+    # 3. Query in Spanish
+    response_query = client.post(
+        "/query",
+        json={"doc_ids": doc_id, "q": "¿De qué trata el documento?"} # "What is the document about?"
+    )
+    assert response_query.status_code == 200
+
+    data = response_query.json()
+    assert data["answer"] == "La respuesta es sobre perros."
+    assert len(data["sources"]) == 1
+    assert data["sources"][0]["text"] == "comportamiento canino"
+
+    # Check that the LLM was called with the spanish query and context
+    mock_llm_call.assert_called_once()
+    prompt_arg = mock_llm_call.call_args[0][0]
+    assert "¿De qué trata el documento?" in prompt_arg
+    assert "comportamiento canino" in prompt_arg

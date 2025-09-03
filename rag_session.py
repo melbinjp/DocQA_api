@@ -11,12 +11,11 @@ class RAGSession:
     including its text chunks, embeddings, and a FAISS index for searching.
     It also tracks its last access time for automatic cleanup.
     """
-    def __init__(self, source: str):
+    def __init__(self, source: str, embedding_model):
         self.source = source
         self.last_accessed = datetime.datetime.now()
-        # Each session gets its own model instance. This could be optimized
-        # in the future by sharing a global model if memory becomes a concern.
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.embedding_model = embedding_model
+
         d_model = self.embedding_model.get_sentence_embedding_dimension()
 
         # Create an in-memory FAISS index. IndexFlatL2 is a simple, fast index

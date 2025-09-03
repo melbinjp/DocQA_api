@@ -1,6 +1,6 @@
-# DocQA: Stateless Question-Answering API
+# DocQA: Multilingual Question-Answering API
 
-DocQA is a lightweight, session-based question-answering tool. It allows a client application to upload a document or provide a URL, and then ask questions about its content.
+DocQA is a lightweight, session-based, and multilingual question-answering tool. It allows a client application to upload a document or provide a URL in various languages, and then ask questions about its content in those languages.
 
 The API is designed to be **stateless and session-isolated**. Each ingested document is handled in a separate, in-memory session that expires after 15 minutes of inactivity. This ensures user data is never shared or persisted.
 
@@ -57,7 +57,7 @@ Ingests a document and prepares it for questioning.
 Asks a question against one or more previously ingested documents.
 
 -   **Method:** `POST`
--   **Description:** Takes a question (`q`) and a list of `doc_ids`. It performs a semantic search across all specified documents and generates a single answer from the combined best context.
+-   **Description:** Takes a question (`q`) and a list of `doc_ids`. It performs a semantic search across all specified documents and generates a single answer from the combined best context. Thanks to a powerful multilingual model, the documents and the query can be in different languages.
 
 #### Request
 -   **Headers:** `Content-Type: application/json`
