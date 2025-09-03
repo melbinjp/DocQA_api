@@ -11,7 +11,8 @@ class RAGSession:
     including its text chunks, embeddings, and a FAISS index for searching.
     It also tracks its last access time for automatic cleanup.
     """
-    def __init__(self):
+    def __init__(self, source: str):
+        self.source = source
         self.last_accessed = datetime.datetime.now()
         # Each session gets its own model instance. This could be optimized
         # in the future by sharing a global model if memory becomes a concern.

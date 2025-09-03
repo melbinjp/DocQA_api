@@ -5,13 +5,13 @@ import pathlib
 import datetime
 import asyncio
 from contextlib import asynccontextmanager
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 import google.generativeai as genai
 import uvicorn
 import requests
@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="DocQA",
     description="An application for asking questions about documents using a stateless, session-based RAG architecture with session timeouts.",
-    version="1.1.0",
+    version="1.2.0", # Bump version for new feature
     lifespan=lifespan
 )
 
@@ -89,7 +89,7 @@ app.add_middleware(
 def generate_rag_response(query: str, context_chunks: List[str]) -> str:
     """Generates a response from the LLM based on the retrieved context."""
     if not context_chunks:
-        return "No relevant information found in the document to answer this question."
+        return "No relevant information found in the specified document(s) to answer this question."
 
     context = "\n\n".join(context_chunks)
     prompt = (
@@ -114,21 +114,18 @@ class IngestResponse(BaseModel):
     chunks_ingested: int = Field(..., description="The number of text chunks the document was split into.")
 
 class QueryPayload(BaseModel):
-    doc_id: str = Field(..., description="The ID of the document session to query against.")
+    doc_ids: Union[List[str], str] = Field(..., description="A single doc_id or a list of doc_ids to query against.")
     q: str = Field(..., description="The question to ask.")
 
 class QuerySource(BaseModel):
     text: str
     score: float
     doc_id: Optional[str] = None
+    source: Optional[str] = None # To hold the filename
 
 class QueryResponse(BaseModel):
     answer: str
     sources: List[QuerySource]
-
-class QueryMultiplePayload(BaseModel):
-    doc_ids: List[str] = Field(..., description="A list of document session IDs to query against.")
-    q: str = Field(..., description="The question to ask.")
 
 # --- API Endpoints ---
 @app.get("/", include_in_schema=False)
@@ -191,51 +188,34 @@ async def ingest(
     if not chunks:
         raise HTTPException(status_code=400, detail=f"Failed to split the document into chunks: {source_name}")
 
-    session = RAGSession()
+    session = RAGSession(source=source_name)
     session.ingest(chunks)
     sessions[doc_id] = session
 
     return IngestResponse(doc_id=doc_id, source=source_name, chunks_ingested=len(chunks))
 
-@app.post("/query", response_model=QueryResponse, summary="Ask a question")
+@app.post("/query", response_model=QueryResponse, summary="Ask a question against one or more documents")
 async def query(payload: QueryPayload) -> QueryResponse:
-    session = sessions.get(payload.doc_id)
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Document session with doc_id '{payload.doc_id}' not found.")
-
-    session.touch()
-
-    retrieved_chunks = session.query(payload.q, k=5)
-
-    relevant_texts = [chunk['text'] for chunk in retrieved_chunks if chunk['score'] > 0.5]
-    answer = generate_rag_response(payload.q, relevant_texts)
-
-    relevant_sources = [chunk for chunk in retrieved_chunks if chunk['score'] > 0.5]
-
-    return QueryResponse(answer=answer, sources=relevant_sources)
-
-
-@app.post("/query-multiple", response_model=QueryResponse, summary="Ask a question across multiple documents")
-async def query_multiple(payload: QueryMultiplePayload) -> QueryResponse:
     """
-    Asks a question against a list of specified document sessions.
-    This allows for searching across multiple documents at once.
+    Asks a question against one or more specified document sessions.
     """
+    doc_ids_to_query = payload.doc_ids
+    if isinstance(doc_ids_to_query, str):
+        doc_ids_to_query = [doc_ids_to_query]
+
     all_chunks = []
-    for doc_id in payload.doc_ids:
+    for doc_id in doc_ids_to_query:
         session = sessions.get(doc_id)
         if session:
             session.touch()
-            # We can add the doc_id to the source for better traceability
             retrieved_chunks = session.query(payload.q, k=5)
             for chunk in retrieved_chunks:
                 chunk['doc_id'] = doc_id
+                chunk['source'] = session.source
             all_chunks.extend(retrieved_chunks)
 
-    # Sort all collected chunks by score to find the best ones across all docs
     all_chunks.sort(key=lambda x: x['score'], reverse=True)
 
-    # Use the top 5 chunks from the combined list as context
     top_chunks = all_chunks[:5]
 
     relevant_texts = [chunk['text'] for chunk in top_chunks if chunk['score'] > 0.5]
@@ -244,7 +224,6 @@ async def query_multiple(payload: QueryMultiplePayload) -> QueryResponse:
     relevant_sources = [chunk for chunk in top_chunks if chunk['score'] > 0.5]
 
     return QueryResponse(answer=answer, sources=relevant_sources)
-
 
 # --- Main Execution ---
 if __name__ == "__main__":
