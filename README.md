@@ -2,6 +2,15 @@
 
 DocQA is a powerful, lightweight API for building advanced question-answering applications. It allows clients to create user sessions, manage collections of documents within those sessions, and perform powerful semantic searches across single or multiple documents.
 
+## Architecture Overview
+
+This project is a prototype-level application built with the following components:
+*   **Backend:** A Python [FastAPI](https://fastapi.tiangolo.com/) server.
+*   **Embeddings:** The `sentence-transformers` library is used to generate vector embeddings for document chunks.
+*   **Vector Search:** [FAISS](https://faiss.ai/) from Meta AI provides efficient in-memory similarity search.
+*   **LLM:** Google's [Gemini](https://deepmind.google/technologies/gemini/) family of models is used for generating answers based on retrieved context.
+*   **Session Storage:** All user sessions and document data are stored **in-memory** and are not persisted. Sessions automatically expire after a period of inactivity. This makes the server stateless but not suitable for production use without modification.
+
 ## Core Features
 - **User Sessions:** Create isolated sessions for each user, allowing them to work with a private collection of documents.
 - **Multi-Document Q&A:** Ingest multiple documents into a single session and perform semantic searches across the entire collection.
@@ -58,10 +67,12 @@ Asks a question within the user session.
   ```json
   {
     "q": "string",
-    "doc_ids": ["string"] // Optional. If omitted, searches all docs in session.
+    "doc_ids": ["string"], // Optional. If omitted, searches all docs in session.
+    "stream": false // Optional. Set to true for a streaming response.
   }
   ```
-- **Response `200 OK`:**
+- **Response (Standard): `200 OK`** (`application/json`)
+  When `stream` is `false` or omitted, the response is a single JSON object:
   ```json
   {
     "answer": "string",
@@ -75,6 +86,22 @@ Asks a question within the user session.
     ]
   }
   ```
+- **Response (Streaming): `200 OK`** (`text/event-stream`)
+  When `stream` is `true`, the response is a Server-Sent Events (SSE) stream. The client should listen for events on this stream. Each event is a JSON object.
+    1.  **Sources Event:** The first event contains the source documents that will be used to generate the answer.
+        ```
+        data: {"type": "sources", "data": [{"text": "...", "score": ...}]}
+        ```
+    2.  **Token Events:** A series of events, each containing a piece of the generated answer.
+        ```
+        data: {"token": "The"}
+        data: {"token": " answer"}
+        data: {"token": " is..."}
+        ```
+    3.  **End Event:** The final event signals that the stream is complete.
+        ```
+        data: {"type": "end"}
+        ```
 
 ### `DELETE /sessions/{session_id}/documents/{doc_id}`
 Deletes a specific document from a user session.

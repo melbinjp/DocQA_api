@@ -26,25 +26,24 @@ class RAGSession:
         # The index in this list is the ID used in the FAISS index.
         self.chunks = []
 
-    def ingest(self, text_chunks: list[str]):
+    def ingest(self, text_chunks: list[str], embeddings: np.ndarray):
         """
-        Processes and ingests text chunks into the session's RAG store.
+        Processes and ingests text chunks and their pre-computed embeddings
+        into the session's RAG store.
 
         Args:
             text_chunks: A list of strings, where each string is a chunk of the
                          source document.
+            embeddings: A numpy array of the embeddings for the text chunks.
         """
         if not text_chunks:
             return
 
-        # Generate embeddings for all chunks.
-        embeddings = self.embedding_model.encode(text_chunks, convert_to_numpy=True)
-
         # FAISS requires a flat numpy array of float32.
-        embeddings = np.array(embeddings, dtype='float32')
+        embeddings_float32 = np.array(embeddings, dtype='float32')
 
         # Add the new embeddings to the FAISS index.
-        self.index.add(embeddings)
+        self.index.add(embeddings_float32)
 
         # Store the corresponding text chunks.
         self.chunks.extend(text_chunks)

@@ -64,15 +64,20 @@ def test_query_session(client, mocker):
     mocker.patch.object(user_session.get_doc(doc_id_a), 'query', return_value=[{"text": "from A", "score": 0.9}])
     mocker.patch.object(user_session.get_doc(doc_id_b), 'query', return_value=[{"text": "from B", "score": 0.8}])
 
-    mock_llm_call = mocker.patch("app.generate_rag_response", return_value="Final Answer")
+    # Mock the async generator
+    async def mock_async_gen(*args, **kwargs):
+        yield "Final Answer"
+    mocker.patch("app.generate_rag_response", side_effect=mock_async_gen)
 
     # Query all docs in session
     response_all = client.post(f"/sessions/{session_id}/query", json={"q": "test"})
     assert response_all.status_code == 200
+    assert response_all.json()["answer"] == "Final Answer"
 
     # Query a specific doc in session
     response_specific = client.post(f"/sessions/{session_id}/query", json={"q": "test", "doc_ids": [doc_id_a]})
     assert response_specific.status_code == 200
+    assert response_specific.json()["answer"] == "Final Answer"
 
 def test_delete_document_from_session(client, mocker):
     """Tests deleting a document from a session."""

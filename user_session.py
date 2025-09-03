@@ -1,18 +1,21 @@
 import datetime
 from typing import Dict
+import numpy as np
 from rag_session import RAGSession
 
 class UserSession:
     """
-    Manages a collection of documents for a single user.
+    Manages a collection of documents and cached data for a single user.
 
     This class holds multiple RAGSession objects, each corresponding to an
     ingested document. It also tracks the last access time for the entire
-    user session.
+    user session and maintains a cache for text chunk embeddings to avoid
+    redundant computations.
     """
     def __init__(self):
         self.last_accessed: datetime.datetime = datetime.datetime.now()
         self.docs: Dict[str, RAGSession] = {}
+        self.embedding_cache: Dict[str, np.ndarray] = {}
 
     def add_doc(self, doc_id: str, rag_session: RAGSession):
         """Adds a new document session to this user's collection."""
