@@ -3,8 +3,7 @@ title: DocQA
 emoji: 📄
 colorFrom: blue
 colorTo: green
-sdk: python
-sdk_version: "3.12.11"
+sdk: docker
 app_file: app.py
 pinned: false
 ---
