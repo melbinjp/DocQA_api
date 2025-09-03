@@ -1,3 +1,14 @@
+---
+title: DocQA
+emoji: 📄
+colorFrom: blue
+colorTo: green
+sdk: python
+sdk_version: "3.12.11"
+app_file: app.py
+pinned: false
+---
+
 # DocQA: A Stateless, Session-Based, Multilingual Q&A API
 
 DocQA is a powerful, lightweight API for building advanced question-answering applications. It allows clients to create user sessions, manage collections of documents within those sessions, and perform powerful semantic searches across single or multiple documents.
