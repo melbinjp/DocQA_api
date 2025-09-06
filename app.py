@@ -154,6 +154,17 @@ class QueryResponse(BaseModel):
     answer: str
     sources: List[QuerySource]
 
+class SessionStatusResponse(BaseModel):
+    session_id: str
+    active: bool
+    remaining_minutes: Optional[float] = None
+    last_accessed: str
+
+class SessionRefreshResponse(BaseModel):
+    session_id: str
+    refreshed_at: str
+    remaining_minutes: float
+
 # --- API Endpoints ---
 @app.get("/", include_in_schema=False)
 async def root():
@@ -323,6 +334,74 @@ async def query(session_id: str, payload: QueryPayload):
         async for content in generate_rag_response(payload.q, relevant_texts, stream=False):
             answer = content
         return QueryResponse(answer=answer, sources=relevant_sources)
+
+@app.get("/sessions/{session_id}/status", response_model=SessionStatusResponse, summary="Get session status and remaining time")
+async def get_session_status(session_id: str):
+    """Returns session status, activity state, and remaining time before expiration."""
+    now = datetime.datetime.now()
+    expiration_time = datetime.timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+    
+    with _session_lock:
+        user_session = sessions.get(session_id)
+    
+    if not user_session:
+        return SessionStatusResponse(
+            session_id=session_id,
+            active=False,
+            last_accessed=now.isoformat()
+        )
+    
+    time_since_access = now - user_session.last_accessed
+    remaining_time = expiration_time - time_since_access
+    
+    if remaining_time.total_seconds() <= 0:
+        return SessionStatusResponse(
+            session_id=session_id,
+            active=False,
+            last_accessed=user_session.last_accessed.isoformat()
+        )
+    
+    return SessionStatusResponse(
+        session_id=session_id,
+        active=True,
+        remaining_minutes=remaining_time.total_seconds() / 60,
+        last_accessed=user_session.last_accessed.isoformat()
+    )
+
+@app.post("/sessions/{session_id}/refresh", response_model=SessionRefreshResponse, summary="Refresh session to extend timeout")
+async def refresh_session(session_id: str):
+    """Refreshes a session to extend its timeout period."""
+    with _session_lock:
+        user_session = sessions.get(session_id)
+    
+    if not user_session:
+        raise HTTPException(status_code=404, detail="User session not found.")
+    
+    user_session.touch()
+    
+    return SessionRefreshResponse(
+        session_id=session_id,
+        refreshed_at=user_session.last_accessed.isoformat(),
+        remaining_minutes=SESSION_TIMEOUT_MINUTES
+    )
+
+@app.get("/sessions/{session_id}/health", summary="Simple session health check")
+async def session_health_check(session_id: str):
+    """Simple endpoint to check if session exists and is active."""
+    now = datetime.datetime.now()
+    expiration_time = datetime.timedelta(minutes=SESSION_TIMEOUT_MINUTES)
+    
+    with _session_lock:
+        user_session = sessions.get(session_id)
+    
+    if not user_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    time_since_access = now - user_session.last_accessed
+    if time_since_access > expiration_time:
+        raise HTTPException(status_code=410, detail="Session expired")
+    
+    return {"status": "active"}
 
 @app.delete("/sessions/{session_id}/documents/{doc_id}", status_code=204, summary="Delete a document from a session")
 async def delete_document(session_id: str, doc_id: str):

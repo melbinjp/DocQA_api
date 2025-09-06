@@ -139,3 +139,81 @@ def test_query_streaming_response(client):
     # Check that the sources and end events are also present
     assert '{"type": "sources"' in stream_content
     assert '{"type": "end"}' in stream_content
+
+def test_session_management_integration(client):
+    """Tests the complete session management workflow with document operations."""
+    # Create session
+    session_response = client.post("/sessions")
+    session_id = session_response.json()["session_id"]
+    
+    # Check initial status
+    status_response = client.get(f"/sessions/{session_id}/status")
+    assert status_response.status_code == 200
+    assert status_response.json()["active"] is True
+    
+    # Ingest a document
+    ingest_response = client.post(
+        f"/sessions/{session_id}/ingest", 
+        files={"file": ("test.txt", b"Test document content")}
+    )
+    assert ingest_response.status_code == 200
+    doc_id = ingest_response.json()["doc_id"]
+    
+    # Health check should pass
+    health_response = client.get(f"/sessions/{session_id}/health")
+    assert health_response.status_code == 200
+    assert health_response.json()["status"] == "active"
+    
+    # Refresh session
+    refresh_response = client.post(f"/sessions/{session_id}/refresh")
+    assert refresh_response.status_code == 200
+    
+    # Query should work after refresh
+    mock_answer = "Test answer"
+    async def mock_async_gen():
+        yield mock_answer
+    
+    with patch("app.generate_rag_response", return_value=mock_async_gen()):
+        query_response = client.post(
+            f"/sessions/{session_id}/query",
+            json={"q": "Test question"}
+        )
+    assert query_response.status_code == 200
+    
+    # Delete document
+    delete_response = client.delete(f"/sessions/{session_id}/documents/{doc_id}")
+    assert delete_response.status_code == 204
+    
+    # Session should still be active after document deletion
+    final_status = client.get(f"/sessions/{session_id}/status")
+    assert final_status.json()["active"] is True
+
+def test_session_timeout_behavior(client):
+    """Tests session timeout and expiration behavior."""
+    import datetime
+    from app import sessions, _session_lock, SESSION_TIMEOUT_MINUTES
+    
+    # Create session
+    session_response = client.post("/sessions")
+    session_id = session_response.json()["session_id"]
+    
+    # Manually expire the session
+    with _session_lock:
+        user_session = sessions[session_id]
+        user_session.last_accessed = datetime.datetime.now() - datetime.timedelta(minutes=SESSION_TIMEOUT_MINUTES + 1)
+    
+    # Status should show inactive
+    status_response = client.get(f"/sessions/{session_id}/status")
+    assert status_response.json()["active"] is False
+    
+    # Health check should fail
+    health_response = client.get(f"/sessions/{session_id}/health")
+    assert health_response.status_code == 410
+    
+    # Refresh should still work (session exists but expired)
+    refresh_response = client.post(f"/sessions/{session_id}/refresh")
+    assert refresh_response.status_code == 200
+    
+    # After refresh, session should be active again
+    status_after_refresh = client.get(f"/sessions/{session_id}/status")
+    assert status_after_refresh.json()["active"] is True

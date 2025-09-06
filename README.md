@@ -117,3 +117,65 @@ Asks a question within the user session.
 Deletes a specific document from a user session.
 - **Response `204 No Content`** on success.
 - **Response `404 Not Found`** if the session or document does not exist.
+
+### `GET /sessions/{session_id}/status`
+Checks session status and remaining time before expiration.
+- **Response `200 OK`:**
+  ```json
+  {
+    "session_id": "string",
+    "active": true,
+    "remaining_minutes": 12.5,
+    "last_accessed": "2024-01-01T12:00:00"
+  }
+  ```
+- Returns `active: false` if session doesn't exist or has expired.
+- `remaining_minutes` only present for active sessions.
+
+### `POST /sessions/{session_id}/refresh`
+Refreshes a session to extend its timeout period.
+- **Response `200 OK`:**
+  ```json
+  {
+    "session_id": "string",
+    "refreshed_at": "2024-01-01T12:00:00",
+    "remaining_minutes": 15.0
+  }
+  ```
+- **Response `404 Not Found`** if the session does not exist.
+
+### `GET /sessions/{session_id}/health`
+Simple health check for session existence and activity.
+- **Response `200 OK`:** `{"status": "active"}` if session is active.
+- **Response `404 Not Found`** if session doesn't exist.
+- **Response `410 Gone`** if session exists but has expired.
+
+---
+
+## Session Management for Frontend Applications
+
+The API provides session management endpoints to help frontend applications handle session lifecycles, timeouts, and user experience.
+
+### Basic Usage
+```javascript
+// Create and manage a session
+const { session_id } = await fetch('/sessions', { method: 'POST' }).then(r => r.json());
+
+// Check session status
+const status = await fetch(`/sessions/${session_id}/status`).then(r => r.json());
+if (status.active) {
+    console.log(`${status.remaining_minutes} minutes remaining`);
+}
+
+// Refresh session to extend timeout
+await fetch(`/sessions/${session_id}/refresh`, { method: 'POST' });
+
+// Quick health check
+const health = await fetch(`/sessions/${session_id}/health`);
+if (health.ok) console.log('Session active');
+```
+
+### Recommended Patterns
+- **Periodic checks:** Monitor session status every 5 minutes
+- **Auto-refresh:** Extend session on user activity when < 5 minutes remain
+- **Error handling:** Handle 404 (not found) and 410 (expired) responses appropriately
