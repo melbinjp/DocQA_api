@@ -138,6 +138,7 @@ class SessionResponse(BaseModel):
 class IngestResponse(BaseModel):
     doc_id: str
     source: str
+    num_chunks: int
 
 class QueryPayload(BaseModel):
     q: str
@@ -277,7 +278,7 @@ async def ingest(session_id: str, request: Request, file: Optional[UploadFile] =
     rag_session.ingest(chunks, all_embeddings_np)
     user_session.add_doc(doc_id, rag_session)
 
-    return IngestResponse(doc_id=doc_id, source=source_name)
+    return IngestResponse(doc_id=doc_id, source=source_name, num_chunks=len(chunks))
 
 @app.post("/sessions/{session_id}/query", summary="Ask a question within a session")
 async def query(session_id: str, payload: QueryPayload):

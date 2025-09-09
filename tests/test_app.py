@@ -43,6 +43,8 @@ def test_ingest_into_session(client, mocker):
     assert response.status_code == 200
     data = response.json()
     assert "doc_id" in data
+    assert "num_chunks" in data
+    assert data["num_chunks"] == 1  # "Test content" should be a single chunk
 
     user_session = sessions[session_id]
     assert len(user_session.docs) == 1
