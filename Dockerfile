@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 RUN mkdir -p /tmp/hf_cache && chmod -R 777 /tmp/hf_cache
 ENV HF_HOME=/tmp/hf_cache
+ENV HF_HUB_DOWNLOAD_TIMEOUT=120
 
 COPY . ./
 EXPOSE 7860

@@ -19,6 +19,9 @@ import uvicorn
 import httpx
 import numpy as np
 
+# Set Hugging Face Hub download timeout to 120 seconds to prevent ReadTimeoutErrors in Spaces
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
+
 from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source
 from utils.splitter import split_text
