@@ -50,7 +50,7 @@ class RAGSession:
 
         print(f"Session ingested {self.index.ntotal} chunks.")
 
-    def query(self, query_text: str, k: int = 5) -> list[dict]:
+    async def query(self, query_text: str, k: int = 5) -> list[dict]:
         """
         Performs a similarity search against the session's document chunks.
 
@@ -62,15 +62,29 @@ class RAGSession:
             A list of dictionaries, each containing the 'text' of a relevant
             chunk and its similarity 'score'.
         """
+        import asyncio
         if self.index.ntotal == 0:
             return []
 
         # Embed the query.
-        query_embedding = self.embedding_model.encode([query_text], convert_to_numpy=True).astype('float32')
+        try:
+            query_embedding_raw = await asyncio.wait_for(
+                asyncio.to_thread(self.embedding_model.encode, [query_text], convert_to_numpy=True),
+                timeout=30.0
+            )
+            query_embedding = query_embedding_raw.astype('float32')
+        except asyncio.TimeoutError:
+            raise TimeoutError("Embedding generation for query timed out.")
 
         # Search the index. `distances` are L2 distances, `indices` are the
         # integer IDs of the vectors in the index.
-        distances, indices = self.index.search(query_embedding, k=min(k, self.index.ntotal))
+        try:
+            distances, indices = await asyncio.wait_for(
+                asyncio.to_thread(self.index.search, query_embedding, min(k, self.index.ntotal)),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError("FAISS search for query timed out.")
 
         results = []
         for i, vector_id in enumerate(indices[0]):

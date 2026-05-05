@@ -116,15 +116,35 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
         f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"
     )
 
+    import google.api_core.exceptions
     try:
-        response = llm_model.generate_content(prompt, stream=stream)
         if stream:
-            for chunk in response:
+            response = await asyncio.wait_for(
+                llm_model.generate_content_async(prompt, stream=True),
+                timeout=30.0
+            )
+            async for chunk in response:
                 # Ensure the chunk has content before sending
                 if chunk.text:
                     yield f"data: {json.dumps({'token': chunk.text})}\n\n"
         else:
+            response = await asyncio.wait_for(
+                llm_model.generate_content_async(prompt, stream=False),
+                timeout=30.0
+            )
             yield response.text.strip()
+    except google.api_core.exceptions.ResourceExhausted as e:
+        error_message = "Rate limit exceeded. Please try again later."
+        if stream:
+            yield f"data: {json.dumps({'error': error_message})}\n\n"
+        else:
+            raise HTTPException(status_code=429, detail=error_message)
+    except (google.api_core.exceptions.DeadlineExceeded, asyncio.TimeoutError) as e:
+        error_message = "LLM generation timed out."
+        if stream:
+            yield f"data: {json.dumps({'error': error_message})}\n\n"
+        else:
+            raise HTTPException(status_code=504, detail=error_message)
     except Exception as e:
         error_message = f"LLM generation failed: {e}"
         if stream:
@@ -256,9 +276,17 @@ async def ingest(session_id: str, request: Request, file: Optional[UploadFile] =
         # Encode each unique new chunk only once to save computation
         unique_new_chunks = list(dict.fromkeys(chunks_to_encode))
 
-        generated_embeddings = app.state.embedding_model.encode(
-            unique_new_chunks, convert_to_numpy=True
-        )
+        try:
+            generated_embeddings = await asyncio.wait_for(
+                asyncio.to_thread(
+                    app.state.embedding_model.encode, unique_new_chunks, convert_to_numpy=True
+                ),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Embedding generation timed out.")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Embedding generation failed: {e}")
 
         new_embeddings_dict = {
             chunk: emb for chunk, emb in zip(unique_new_chunks, generated_embeddings)
@@ -303,7 +331,13 @@ async def query(session_id: str, payload: QueryPayload):
 
     all_chunks = []
     for doc_id, rag_session in docs_to_query_items:
-        retrieved = rag_session.query(payload.q, k=5)
+        try:
+            retrieved = await rag_session.query(payload.q, k=5)
+        except TimeoutError as e:
+            raise HTTPException(status_code=504, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Query search failed: {e}")
+
         for chunk in retrieved:
             chunk['doc_id'] = doc_id
             chunk['source'] = rag_session.source
