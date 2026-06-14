@@ -117,42 +117,54 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
     )
 
     import google.api_core.exceptions
-    try:
-        if stream:
-            response = await asyncio.wait_for(
-                llm_model.generate_content_async(prompt, stream=True),
-                timeout=30.0
-            )
-            async for chunk in response:
-                # Ensure the chunk has content before sending
-                if chunk.text:
-                    yield f"data: {json.dumps({'token': chunk.text})}\n\n"
-        else:
-            response = await asyncio.wait_for(
-                llm_model.generate_content_async(prompt, stream=False),
-                timeout=30.0
-            )
-            yield response.text.strip()
-    except google.api_core.exceptions.ResourceExhausted as e:
-        error_message = "Rate limit exceeded. Please try again later."
-        if stream:
-            yield f"data: {json.dumps({'error': error_message})}\n\n"
-        else:
-            raise HTTPException(status_code=429, detail=error_message)
-    except (google.api_core.exceptions.DeadlineExceeded, asyncio.TimeoutError) as e:
-        error_message = "LLM generation timed out."
-        if stream:
-            yield f"data: {json.dumps({'error': error_message})}\n\n"
-        else:
-            raise HTTPException(status_code=504, detail=error_message)
-    except Exception as e:
-        error_message = f"LLM generation failed: {e}"
-        if stream:
-            yield f"data: {json.dumps({'error': error_message})}\n\n"
-        else:
-            # In a non-streaming context, we can raise an exception that the
-            # calling endpoint can handle.
-            raise HTTPException(status_code=500, detail=error_message)
+    max_retries = 3
+    retry_delay = 1.0
+
+    for attempt in range(max_retries):
+        try:
+            if stream:
+                response = await asyncio.wait_for(
+                    llm_model.generate_content_async(prompt, stream=True),
+                    timeout=30.0
+                )
+                async for chunk in response:
+                    # Ensure the chunk has content before sending
+                    if chunk.text:
+                        yield f"data: {json.dumps({'token': chunk.text})}\n\n"
+                return  # Exit generator on success
+            else:
+                response = await asyncio.wait_for(
+                    llm_model.generate_content_async(prompt, stream=False),
+                    timeout=30.0
+                )
+                yield response.text.strip()
+                return  # Exit generator on success
+        except google.api_core.exceptions.ResourceExhausted as e:
+            if attempt == max_retries - 1:
+                error_message = "Rate limit exceeded. Please try again later."
+                if stream:
+                    yield f"data: {json.dumps({'error': error_message})}\n\n"
+                    return
+                else:
+                    raise HTTPException(status_code=429, detail=error_message)
+            else:
+                print(f"Rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+        except (google.api_core.exceptions.DeadlineExceeded, asyncio.TimeoutError) as e:
+            error_message = "LLM generation timed out."
+            if stream:
+                yield f"data: {json.dumps({'error': error_message})}\n\n"
+                return
+            else:
+                raise HTTPException(status_code=504, detail=error_message)
+        except Exception as e:
+            error_message = f"LLM generation failed: {e}"
+            if stream:
+                yield f"data: {json.dumps({'error': error_message})}\n\n"
+                return
+            else:
+                raise HTTPException(status_code=500, detail=error_message)
 
 # --- API Models ---
 class SessionResponse(BaseModel):
