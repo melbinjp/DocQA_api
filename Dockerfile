@@ -3,7 +3,7 @@ WORKDIR /app
 
 # install torch first so that subsequent deps see it already resolved
 COPY requirements.txt ./
-RUN pip install --no-cache-dir torch==2.4.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
+RUN pip install --no-cache-dir torch==2.4.0 --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt
 
 
