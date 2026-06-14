@@ -14,7 +14,8 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import google.generativeai as genai
+from google import genai
+from google.genai import errors
 import uvicorn
 import httpx
 import numpy as np
@@ -91,8 +92,9 @@ app = FastAPI(
 GENAI_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GENAI_API_KEY:
     raise RuntimeError("GOOGLE_API_KEY environment variable not set.")
-genai.configure(api_key=GENAI_API_KEY)
-llm_model = genai.GenerativeModel("gemini-2.0-flash-lite")
+# Initialize the modern google-genai Client
+ai_client = genai.Client(api_key=GENAI_API_KEY)
+MODEL_NAME = "gemini-3.5-flash"
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -116,7 +118,6 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
         f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"
     )
 
-    import google.api_core.exceptions
     max_retries = 3
     retry_delay = 1.0
 
@@ -124,7 +125,10 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
         try:
             if stream:
                 response = await asyncio.wait_for(
-                    llm_model.generate_content_async(prompt, stream=True),
+                    ai_client.aio.models.generate_content_stream(
+                        model=MODEL_NAME,
+                        contents=prompt
+                    ),
                     timeout=30.0
                 )
                 async for chunk in response:
@@ -134,24 +138,36 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
                 return  # Exit generator on success
             else:
                 response = await asyncio.wait_for(
-                    llm_model.generate_content_async(prompt, stream=False),
+                    ai_client.aio.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=prompt
+                    ),
                     timeout=30.0
                 )
                 yield response.text.strip()
                 return  # Exit generator on success
-        except google.api_core.exceptions.ResourceExhausted as e:
-            if attempt == max_retries - 1:
-                error_message = "Rate limit exceeded. Please try again later."
+        except errors.APIError as e:
+            # Check for HTTP 429 status code
+            if e.code == 429:
+                if attempt == max_retries - 1:
+                    error_message = "Rate limit exceeded. Please try again later."
+                    if stream:
+                        yield f"data: {json.dumps({'error': error_message})}\n\n"
+                        return
+                    else:
+                        raise HTTPException(status_code=429, detail=error_message)
+                else:
+                    print(f"Rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+            else:
+                error_message = f"LLM generation failed: {e.message}"
                 if stream:
                     yield f"data: {json.dumps({'error': error_message})}\n\n"
                     return
                 else:
-                    raise HTTPException(status_code=429, detail=error_message)
-            else:
-                print(f"Rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
-        except (google.api_core.exceptions.DeadlineExceeded, asyncio.TimeoutError) as e:
+                    raise HTTPException(status_code=500, detail=error_message)
+        except asyncio.TimeoutError:
             error_message = "LLM generation timed out."
             if stream:
                 yield f"data: {json.dumps({'error': error_message})}\n\n"
