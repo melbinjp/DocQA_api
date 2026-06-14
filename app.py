@@ -286,24 +286,37 @@ async def ingest(session_id: str, request: Request):
 
     source_name = ""
     content = b""
+    source_ext = "url"
 
     if has_file:
         source_name = file_filename
         content = file_content
+        source_ext = pathlib.Path(source_name).suffix or "url"
     elif url:
         source_name = url
         try:
-            response = await app.state.http_client.get(url)
-            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            jina_url = f"https://r.jina.ai/{url}"
+            print(f"Fetching URL via Jina Reader: {jina_url}")
+            response = await app.state.http_client.get(jina_url, timeout=30.0)
+            response.raise_for_status()
             content = response.content
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=e.response.status_code, detail=f"Failed to fetch URL: {e.response.text}")
-        except httpx.RequestError as e:
-            # For other request errors like connection issues
-            raise HTTPException(status_code=500, detail=f"Failed to fetch URL: {e}")
+            source_ext = "md"  # Jina Reader returns Markdown content
+        except Exception as e:
+            print(f"Jina Reader fetch failed: {e}. Falling back to direct URL fetch...")
+            try:
+                response = await app.state.http_client.get(url, timeout=30.0)
+                response.raise_for_status()
+                content = response.content
+                from urllib.parse import urlparse
+                parsed_url = urlparse(url)
+                source_ext = pathlib.Path(parsed_url.path).suffix or "url"
+            except httpx.HTTPStatusError as e_direct:
+                raise HTTPException(status_code=e_direct.response.status_code, detail=f"Failed to fetch URL: {e_direct.response.text}")
+            except httpx.RequestError as e_direct:
+                raise HTTPException(status_code=500, detail=f"Failed to fetch URL: {e_direct}")
 
     try:
-        text = load_source(content, pathlib.Path(source_name).suffix or "url")
+        text = load_source(content, source_ext)
     except DocumentLoaderError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

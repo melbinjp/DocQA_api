@@ -22,6 +22,13 @@ def load_source(raw: bytes, ext: str) -> str:
     """
     ext = ext.lower().strip('.')
     
+    # Fast-path for plain text and markdown files
+    if ext in ['md', 'txt', 'text']:
+        try:
+            return raw.decode('utf-8')
+        except UnicodeDecodeError:
+            return raw.decode('utf-8', errors='ignore')
+
     # Fast-path for HTML/URLs using BeautifulSoup to prevent timeouts on large webpages
     if ext in ['url', 'html', 'htm']:
         try:
