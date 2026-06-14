@@ -7,21 +7,38 @@ from .exceptions import DocumentLoaderError
 
 def load_source(raw: bytes, ext: str) -> str:
     """
-    Extracts text content from a raw byte stream using MarkItDown.
+    Extracts text content from a raw byte stream using MarkItDown (for office documents)
+    or BeautifulSoup (for HTML/URLs).
 
     Args:
         raw: The raw bytes of the file.
         ext: The file extension (e.g., '.txt', 'pdf', '.html').
 
     Returns:
-        The extracted text content as a Markdown string.
+        The extracted text content.
 
     Raises:
         DocumentLoaderError: If there's an error during parsing.
     """
     ext = ext.lower().strip('.')
-    if ext == 'url':
-        ext = 'html'
+    
+    # Fast-path for HTML/URLs using BeautifulSoup to prevent timeouts on large webpages
+    if ext in ['url', 'html', 'htm']:
+        try:
+            from bs4 import BeautifulSoup
+            html = raw.decode('utf-8', errors='ignore')
+            soup = BeautifulSoup(html, 'html.parser')
+            # Decompose tags that do not contain main reading content
+            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'noscript']):
+                tag.decompose()
+            text_content = soup.get_text(' ', strip=True)
+            if not text_content or not text_content.strip():
+                raise DocumentLoaderError("HTML text extraction resulted in no content.")
+            return text_content
+        except Exception as e:
+            if isinstance(e, DocumentLoaderError):
+                raise
+            raise DocumentLoaderError(f"Failed to parse HTML content: {e}") from e
 
     md = MarkItDown()
 
