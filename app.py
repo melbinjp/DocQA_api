@@ -353,7 +353,7 @@ async def ingest(session_id: str, request: Request):
                 asyncio.to_thread(
                     app.state.embedding_model.encode, unique_new_chunks, convert_to_numpy=True
                 ),
-                timeout=30.0
+                timeout=180.0
             )
         except asyncio.TimeoutError:
             raise HTTPException(status_code=504, detail="Embedding generation timed out.")
