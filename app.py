@@ -208,28 +208,48 @@ async def ingest(session_id: str, request: Request):
     if not user_session:
         raise HTTPException(status_code=404, detail="User session not found.")
 
-    content_type = request.headers.get("content-type", "")
     file_filename = None
     file_content = None
     url = None
     has_file = False
 
-    if "multipart/form-data" in content_type:
-        form = await request.form()
-        file = form.get("file")
-        if file and hasattr(file, "filename") and file.filename:
-            file_filename = file.filename
-            file_content = await file.read()
-            has_file = True
-    elif "application/json" in content_type:
+    body_bytes = await request.body()
+
+    # 1. Try to parse as JSON URL first
+    try:
+        body = json.loads(body_bytes)
+        url = body.get("url")
+    except Exception:
+        pass
+
+    # 2. If no URL was successfully parsed, try parsing as Form data
+    if not url:
         try:
-            body = await request.json()
-            url = body.get("url")
+            form = await request.form()
+            file = form.get("file")
+            if file and hasattr(file, "filename") and file.filename:
+                file_filename = file.filename
+                file_content = await file.read()
+                has_file = True
         except Exception:
             pass
 
     if not has_file and not url:
-        raise HTTPException(status_code=400, detail="Provide either a file (multipart/form-data) or a URL (application/json).")
+        content_type = request.headers.get("content-type", "")
+        headers_str = str(dict(request.headers))
+        try:
+            body_preview = (await request.body())[:200]
+            body_preview_str = body_preview.decode("utf-8", errors="replace")
+        except Exception as e:
+            body_preview_str = f"could not read body: {e}"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Provide either a file (multipart/form-data) or a URL (application/json). "
+                f"Received Content-Type: {content_type}. Headers: {headers_str}. "
+                f"Body preview: {body_preview_str}"
+            )
+        )
     if has_file and url:
         raise HTTPException(status_code=400, detail="Provide either a file or a URL, not both.")
 

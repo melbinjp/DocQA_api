@@ -31,14 +31,33 @@ def load_source(raw: bytes, ext: str) -> str:
         tmp_path = tmp.name
 
     try:
-        result = md.convert(tmp_path)
-        if not result.text_content or not result.text_content.strip():
+        text_content = ""
+        try:
+            result = md.convert(tmp_path)
+            text_content = result.text_content or ""
+        except Exception as e:
+            if ext == "pdf":
+                # Suppress error and let PyMuPDF handle fallback below
+                pass
+            else:
+                raise DocumentLoaderError(f"Failed to load content with extension '{ext}': {e}") from e
+
+        # If PDF extraction returned no content or failed, run PyMuPDF fallback
+        if ext == "pdf" and (not text_content or not text_content.strip()):
+            try:
+                import fitz
+                doc = fitz.open(tmp_path)
+                texts = [page.get_text() for page in doc]
+                text_content = "\n".join(texts)
+            except Exception as pdf_err:
+                raise DocumentLoaderError(
+                    f"PDF extraction failed using both MarkItDown and PyMuPDF fallback. "
+                    f"PyMuPDF error: {pdf_err}"
+                )
+
+        if not text_content or not text_content.strip():
             raise DocumentLoaderError("Extraction resulted in no content.")
-        return result.text_content
-    except Exception as e:
-        if isinstance(e, DocumentLoaderError):
-            raise
-        raise DocumentLoaderError(f"Failed to load content with extension '{ext}': {e}") from e
+        return text_content
     finally:
         if os.path.exists(tmp_path):
             try:
