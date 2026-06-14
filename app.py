@@ -202,35 +202,43 @@ async def create_session():
     return SessionResponse(session_id=session_id)
 
 @app.post("/sessions/{session_id}/ingest", response_model=IngestResponse, summary="Ingest a document into a session")
-async def ingest(session_id: str, request: Request, file: Optional[UploadFile] = File(None)):
+async def ingest(session_id: str, request: Request):
     with _session_lock:
         user_session = sessions.get(session_id)
     if not user_session:
         raise HTTPException(status_code=404, detail="User session not found.")
 
+    content_type = request.headers.get("content-type", "")
+    file_filename = None
+    file_content = None
     url = None
-    # If a file is not provided, the client may have sent a JSON body with a URL.
-    if not file:
+    has_file = False
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        file = form.get("file")
+        if file and hasattr(file, "filename") and file.filename:
+            file_filename = file.filename
+            file_content = await file.read()
+            has_file = True
+    elif "application/json" in content_type:
         try:
             body = await request.json()
             url = body.get("url")
         except Exception:
-            # This can happen if the body is not valid JSON, which is expected
-            # if the client sent an empty multipart form.
             pass
 
-    if not file and not url:
+    if not has_file and not url:
         raise HTTPException(status_code=400, detail="Provide either a file (multipart/form-data) or a URL (application/json).")
-    if file and url:
-        # This case should ideally not be hit if the client is behaving.
+    if has_file and url:
         raise HTTPException(status_code=400, detail="Provide either a file or a URL, not both.")
 
     source_name = ""
     content = b""
 
-    if file:
-        source_name = file.filename
-        content = await file.read()
+    if has_file:
+        source_name = file_filename
+        content = file_content
     elif url:
         source_name = url
         try:
