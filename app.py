@@ -9,6 +9,9 @@ from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any, Union
 
 import json
+import socket
+import ipaddress
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -98,6 +101,7 @@ if not GENAI_API_KEY:
 # Initialize the modern google-genai Client
 ai_client = genai.Client(api_key=GENAI_API_KEY)
 MODEL_NAME = "gemini-3.5-flash"
+FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-2.5-flash"]
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -105,6 +109,19 @@ app.add_middleware(
 )
 
 # --- Helper Functions ---
+def is_safe_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+        if not parsed.hostname:
+            return False
+        ip = socket.gethostbyname(parsed.hostname)
+        ip_obj = ipaddress.ip_address(ip)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast or ip_obj.is_reserved:
+            return False
+        return True
+    except Exception:
+        return False
+
 async def generate_rag_response(query: str, context_chunks: List[str], stream: bool = False):
     """Generates a response from the LLM, supports streaming."""
     if not context_chunks:
@@ -125,11 +142,15 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
     retry_delay = 1.0
 
     for attempt in range(max_retries):
+        current_model = MODEL_NAME
+        if attempt > 0 and attempt - 1 < len(FALLBACK_MODELS):
+            current_model = FALLBACK_MODELS[attempt - 1]
+
         try:
             if stream:
                 response = await asyncio.wait_for(
                     ai_client.aio.models.generate_content_stream(
-                        model=MODEL_NAME,
+                        model=current_model,
                         contents=prompt
                     ),
                     timeout=30.0
@@ -142,7 +163,7 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
             else:
                 response = await asyncio.wait_for(
                     ai_client.aio.models.generate_content(
-                        model=MODEL_NAME,
+                        model=current_model,
                         contents=prompt
                     ),
                     timeout=30.0
@@ -150,17 +171,17 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
                 yield response.text.strip()
                 return  # Exit generator on success
         except errors.APIError as e:
-            # Check for HTTP 429 status code
-            if e.code == 429:
+            # Check for HTTP 429 or 503 status code (high demand)
+            if e.code in (429, 503):
                 if attempt == max_retries - 1:
-                    error_message = "Rate limit exceeded. Please try again later."
+                    error_message = "Model is experiencing high demand. Please try again later."
                     if stream:
                         yield f"data: {json.dumps({'error': error_message})}\n\n"
                         return
                     else:
-                        raise HTTPException(status_code=429, detail=error_message)
+                        raise HTTPException(status_code=503, detail=error_message)
                 else:
-                    print(f"Rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+                    print(f"High demand hit for {current_model}. Retrying with fallback... (Attempt {attempt+1}/{max_retries})")
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
             else:
@@ -293,6 +314,8 @@ async def ingest(session_id: str, request: Request):
         content = file_content
         source_ext = pathlib.Path(source_name).suffix or "url"
     elif url:
+        if not is_safe_url(url):
+            raise HTTPException(status_code=400, detail="Invalid or restricted URL provided.")
         source_name = url
         try:
             jina_url = f"https://r.jina.ai/{url}"
