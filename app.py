@@ -458,7 +458,15 @@ async def query(session_id: str, payload: QueryPayload):
             # Signal the end of the stream
             yield f"data: {json.dumps({'type': 'end'})}\n\n"
 
-        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
 
     # If not streaming, use the original logic
     else:
