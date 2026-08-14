@@ -3,7 +3,10 @@ WORKDIR /app
 
 # install torch first so that subsequent deps see it already resolved
 COPY requirements.txt ./
-RUN pip install --no-cache-dir torch==2.4.0 --index-url https://download.pytorch.org/whl/cpu
+# The CPU index no longer hosts every torch dependency as a wheel, so deps fall
+# back to PyPI; torch itself still resolves to 2.4.0+cpu because a local version
+# sorts above the plain release.
+RUN pip install --no-cache-dir torch==2.4.0 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 RUN pip install --no-cache-dir -r requirements.txt
 
 
