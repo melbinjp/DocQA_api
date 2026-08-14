@@ -103,6 +103,18 @@ ai_client = genai.Client(api_key=GENAI_API_KEY)
 MODEL_NAME = "gemini-3.5-flash"
 FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-2.5-flash"]
 
+# Two ceilings that were inline literals, named so they are visible in one place.
+# 30s is the value the code already used. Warm calls to this Space come back in a
+# few seconds; the ones that run past 30s are the ones right after the Space wakes
+# from sleep, and those are now retried rather than surfaced. Raising the ceiling
+# instead would have made every genuinely stuck call three times slower to report.
+LLM_TIMEOUT_SECONDS = 30.0
+
+# `wait_for` around `generate_content_stream(...)` bounds getting the iterator, not
+# consuming it. This bounds each chunk, so a stream that stalls mid-answer ends
+# instead of leaving the browser on an open connection with no error and no end.
+STREAM_CHUNK_TIMEOUT = 30.0
+
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
@@ -140,11 +152,14 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
 
     max_retries = 3
     retry_delay = 1.0
+    emitted = False
 
     for attempt in range(max_retries):
         current_model = MODEL_NAME
         if attempt > 0 and attempt - 1 < len(FALLBACK_MODELS):
             current_model = FALLBACK_MODELS[attempt - 1]
+
+        last_attempt = attempt == max_retries - 1
 
         try:
             if stream:
@@ -153,11 +168,19 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
                         model=current_model,
                         contents=prompt
                     ),
-                    timeout=30.0
+                    timeout=LLM_TIMEOUT_SECONDS
                 )
-                async for chunk in response:
+                iterator = response.__aiter__()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            iterator.__anext__(), timeout=STREAM_CHUNK_TIMEOUT
+                        )
+                    except StopAsyncIteration:
+                        break
                     # Ensure the chunk has content before sending
                     if chunk.text:
+                        emitted = True
                         yield f"data: {json.dumps({'token': chunk.text})}\n\n"
                 return  # Exit generator on success
             else:
@@ -166,38 +189,46 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
                         model=current_model,
                         contents=prompt
                     ),
-                    timeout=30.0
+                    timeout=LLM_TIMEOUT_SECONDS
                 )
                 yield response.text.strip()
                 return  # Exit generator on success
-        except errors.APIError as e:
-            # Check for HTTP 429 or 503 status code (high demand)
-            if e.code in (429, 503):
-                if attempt == max_retries - 1:
-                    error_message = "Model is experiencing high demand. Please try again later."
-                    if stream:
-                        yield f"data: {json.dumps({'error': error_message})}\n\n"
-                        return
-                    else:
-                        raise HTTPException(status_code=503, detail=error_message)
-                else:
-                    print(f"High demand hit for {current_model}. Retrying with fallback... (Attempt {attempt+1}/{max_retries})")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
-            else:
+        except (asyncio.TimeoutError, errors.APIError) as e:
+            # A timeout and a 429/503 are the same kind of problem: the answer was
+            # never produced, so asking again is safe. Anything else is a real
+            # error, and retrying it three times only delays telling the user.
+            if isinstance(e, errors.APIError) and e.code not in (429, 503):
                 error_message = f"LLM generation failed: {e.message}"
                 if stream:
                     yield f"data: {json.dumps({'error': error_message})}\n\n"
                     return
                 else:
                     raise HTTPException(status_code=500, detail=error_message)
-        except asyncio.TimeoutError:
-            error_message = "LLM generation timed out."
+
+            timed_out = isinstance(e, asyncio.TimeoutError)
+
+            # Once tokens are on the wire the answer is half delivered, and
+            # starting over would repeat what the reader has already seen. A
+            # stream that fails mid-answer ends with an error, not a second try.
+            if not last_attempt and not emitted:
+                reason = "Timed out" if timed_out else "High demand hit"
+                print(f"{reason} for {current_model}. Retrying with fallback... "
+                      f"(Attempt {attempt+1}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+
+            if timed_out:
+                error_message = "LLM generation timed out."
+                status_code = 504
+            else:
+                error_message = "Model is experiencing high demand. Please try again later."
+                status_code = 503
             if stream:
                 yield f"data: {json.dumps({'error': error_message})}\n\n"
                 return
             else:
-                raise HTTPException(status_code=504, detail=error_message)
+                raise HTTPException(status_code=status_code, detail=error_message)
         except Exception as e:
             error_message = f"LLM generation failed: {e}"
             if stream:
@@ -288,18 +319,11 @@ async def ingest(session_id: str, request: Request):
 
     if not has_file and not url:
         content_type = request.headers.get("content-type", "")
-        headers_str = str(dict(request.headers))
-        try:
-            body_preview = (await request.body())[:200]
-            body_preview_str = body_preview.decode("utf-8", errors="replace")
-        except Exception as e:
-            body_preview_str = f"could not read body: {e}"
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Provide either a file (multipart/form-data) or a URL (application/json). "
-                f"Received Content-Type: {content_type}. Headers: {headers_str}. "
-                f"Body preview: {body_preview_str}"
+                f"Received Content-Type: {content_type}."
             )
         )
     if has_file and url:
