@@ -4,9 +4,11 @@ WORKDIR /app
 # install torch first so that subsequent deps see it already resolved
 COPY requirements.txt ./
 # The CPU index no longer hosts every torch dependency as a wheel, so deps fall
-# back to PyPI; torch itself still resolves to 2.4.0+cpu because a local version
-# sorts above the plain release.
-RUN pip install --no-cache-dir torch==2.4.0 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+# back to PyPI; torch itself still resolves to the +cpu wheel because a local
+# version sorts above the plain release. Pinned at 2.9.1 rather than 2.4.0:
+# current transformers only imports torch behind a >=2.5 version guard, so 2.4
+# dies at import time with "NameError: name 'torch' is not defined".
+RUN pip install --no-cache-dir torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 RUN pip install --no-cache-dir -r requirements.txt
 
 
