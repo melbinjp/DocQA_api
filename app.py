@@ -9,9 +9,6 @@ from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any, Union
 
 import json
-import socket
-import ipaddress
-from urllib.parse import urlparse
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -28,6 +25,7 @@ os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 
 from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source, load_source_pages
+from utils.url_fetch import fetch_url_document, is_safe_url_async
 from utils.splitter import split_text, split_pages
 from utils.exceptions import DocumentLoaderError
 from rag_session import RAGSession
@@ -121,19 +119,6 @@ app.add_middleware(
 )
 
 # --- Helper Functions ---
-def is_safe_url(url: str) -> bool:
-    try:
-        parsed = urlparse(url)
-        if not parsed.hostname:
-            return False
-        ip = socket.gethostbyname(parsed.hostname)
-        ip_obj = ipaddress.ip_address(ip)
-        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast or ip_obj.is_reserved:
-            return False
-        return True
-    except Exception:
-        return False
-
 async def generate_rag_response(query: str, context_chunks: List[str], stream: bool = False):
     """Generates a response from the LLM, supports streaming."""
     if not context_chunks:
@@ -339,29 +324,10 @@ async def ingest(session_id: str, request: Request):
         content = file_content
         source_ext = pathlib.Path(source_name).suffix or "url"
     elif url:
-        if not is_safe_url(url):
+        if not await is_safe_url_async(url):
             raise HTTPException(status_code=400, detail="Invalid or restricted URL provided.")
         source_name = url
-        try:
-            jina_url = f"https://r.jina.ai/{url}"
-            print(f"Fetching URL via Jina Reader: {jina_url}")
-            response = await app.state.http_client.get(jina_url, timeout=30.0)
-            response.raise_for_status()
-            content = response.content
-            source_ext = "md"  # Jina Reader returns Markdown content
-        except Exception as e:
-            print(f"Jina Reader fetch failed: {e}. Falling back to direct URL fetch...")
-            try:
-                response = await app.state.http_client.get(url, timeout=30.0)
-                response.raise_for_status()
-                content = response.content
-                from urllib.parse import urlparse
-                parsed_url = urlparse(url)
-                source_ext = pathlib.Path(parsed_url.path).suffix or "url"
-            except httpx.HTTPStatusError as e_direct:
-                raise HTTPException(status_code=e_direct.response.status_code, detail=f"Failed to fetch URL: {e_direct.response.text}")
-            except httpx.RequestError as e_direct:
-                raise HTTPException(status_code=500, detail=f"Failed to fetch URL: {e_direct}")
+        content, source_ext = await fetch_url_document(app.state.http_client, url)
 
     try:
         pages = load_source_pages(content, source_ext)
