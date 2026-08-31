@@ -27,8 +27,8 @@ import numpy as np
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 
 from sentence_transformers import SentenceTransformer
-from utils.loaders import load_source
-from utils.splitter import split_text
+from utils.loaders import load_source, load_source_pages
+from utils.splitter import split_text, split_pages
 from utils.exceptions import DocumentLoaderError
 from rag_session import RAGSession
 from user_session import UserSession
@@ -225,6 +225,7 @@ class QuerySource(BaseModel):
     score: float
     doc_id: str
     source: str
+    page: Optional[int] = None
 
 class QueryResponse(BaseModel):
     answer: str
@@ -339,14 +340,16 @@ async def ingest(session_id: str, request: Request):
                 raise HTTPException(status_code=500, detail=f"Failed to fetch URL: {e_direct}")
 
     try:
-        text = load_source(content, source_ext)
+        pages = load_source_pages(content, source_ext)
     except DocumentLoaderError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if not text or not text.strip():
+    if not pages or not any(t and t.strip() for _, t in pages):
         raise HTTPException(status_code=400, detail="Could not extract any text from the provided source.")
 
-    chunks = split_text(text)
+    page_chunks = split_pages(pages)
+    chunks = [c["text"] for c in page_chunks]
+    chunk_pages = [c["page"] for c in page_chunks]
     if not chunks:
         raise HTTPException(status_code=400, detail="The document is too short to be processed.")
 
@@ -401,7 +404,7 @@ async def ingest(session_id: str, request: Request):
     doc_id = uuid.uuid4().hex
     rag_session = RAGSession(source=source_name, embedding_model=app.state.embedding_model)
     # Pass the pre-computed embeddings to the new ingest method
-    rag_session.ingest(chunks, all_embeddings_np)
+    rag_session.ingest(chunks, all_embeddings_np, chunk_pages)
     user_session.add_doc(doc_id, rag_session)
 
     return IngestResponse(doc_id=doc_id, source=source_name, num_chunks=len(chunks))
