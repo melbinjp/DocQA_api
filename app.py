@@ -355,6 +355,14 @@ async def ingest(session_id: str, request: Request):
     page_chunks = split_pages(pages)
     chunks = [c["text"] for c in page_chunks]
     chunk_pages = [c["page"] for c in page_chunks]
+
+    # What is matched is not always what is read. A table chunk carries an
+    # `embed_text` of just its caption, because a vector built from the whole
+    # grid is dominated by the numbers and stops being findable: measured
+    # 2026-09-01, the Table 3 chunk was not retrieved for a question its own
+    # caption answers, while its neighbours scored 0.36 to 0.47. The full grid
+    # is still what goes into the prompt and still what gets cited.
+    embed_inputs = [c.get("embed_text") or c["text"] for c in page_chunks]
     if not chunks:
         raise HTTPException(status_code=400, detail="The document is too short to be processed.")
 
@@ -366,8 +374,10 @@ async def ingest(session_id: str, request: Request):
     chunks_to_encode = []
     indices_of_new_chunks = []
 
-    # Identify which chunks are new and which are cached
-    for i, chunk in enumerate(chunks):
+    # Identify which chunks are new and which are cached. Keyed on what is
+    # actually encoded, not on the chunk text, or a table would be looked up by
+    # its grid and stored under its caption.
+    for i, chunk in enumerate(embed_inputs):
         if chunk in user_session.embedding_cache:
             ordered_embeddings[i] = user_session.embedding_cache[chunk]
         else:

@@ -227,6 +227,17 @@ def _split_table(table: str, max_chars: int) -> List[str]:
     return chunks or [table]
 
 
+def _table_preamble(table: str) -> str:
+    """The caption and column list above a grid, or "" if it has none."""
+    lines = []
+    for line in table.split("\n"):
+        if line.lstrip().startswith("|"):
+            break
+        if line.strip():
+            lines.append(line.strip())
+    return " ".join(lines)
+
+
 def split_pages(pages, max_chars: int = DEFAULT_MAX_CHARS,
                 overlap: int = DEFAULT_OVERLAP) -> List[dict]:
     """Split `[(page, text), ...]` into chunks that remember their page.
@@ -244,6 +255,28 @@ def split_pages(pages, max_chars: int = DEFAULT_MAX_CHARS,
             pieces = (_split_table(segment, max_chars) if is_table
                       else split_text(segment, max_chars=max_chars, overlap=overlap))
             for chunk in pieces:
-                if chunk.strip():
-                    out.append({"text": chunk, "page": page})
+                if not chunk.strip():
+                    continue
+                item = {"text": chunk, "page": page}
+                if is_table:
+                    # What gets embedded is not always what gets returned.
+                    #
+                    # A table chunk is mostly grid: 1263 characters on page 9 of
+                    # Attention Is All You Need, of which the caption is 300 and
+                    # the rest is `|base|6<br>512<br>2048<br>...`. Embedding the
+                    # whole thing lets the numbers dominate the vector, and
+                    # measured 2026-09-01 that chunk was still not retrieved for
+                    # "how does the parameter count of the big model compare to
+                    # the base model" even after the caption was attached to it.
+                    # Its neighbours scored 0.36 to 0.47 and it placed below all
+                    # of them.
+                    #
+                    # The caption alone is a sentence about what the table is
+                    # for, which is what a question looks like. So the caption is
+                    # what the index matches on, and the full grid is what the
+                    # model is given to read.
+                    lead = _table_preamble(chunk)
+                    if lead:
+                        item["embed_text"] = lead
+                out.append(item)
     return out

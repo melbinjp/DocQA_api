@@ -168,3 +168,33 @@ def test_a_long_paragraph_is_not_swallowed_as_a_caption():
     out = split_pages([(1, prose + "\n|a|b|\n|---|---|\n|1|2|\n")], max_chars=2000)
     table = [c["text"] for c in out if "|---|" in c["text"]][0]
     assert "Sentence number 0" not in table, "the whole paragraph was pulled into the table"
+
+
+def test_a_table_is_indexed_by_its_caption_not_its_grid():
+    """A vector built from a grid is mostly numbers and stops being findable.
+
+    Measured 2026-09-01: with the caption inside the chunk but the whole chunk
+    embedded, the Table 3 chunk was still not retrieved for a question its own
+    caption answers, while neighbouring chunks scored 0.36 to 0.47. The caption
+    is what a question looks like; the grid is what the answer is in.
+    """
+    page = (
+        "Preceding prose.\n"
+        "\n"
+        "Table 3: Variations on the architecture, against the base model.\n"
+        "Columns: model, layers, params.\n"
+        "|model|layers|params|\n"
+        "|---|---|---|\n"
+        "|big|6|213|\n"
+    )
+    table = [c for c in split_pages([(9, page)]) if "213" in c["text"]][0]
+    assert "embed_text" in table, "the table would be indexed by its grid"
+    assert "Table 3" in table["embed_text"] and "base model" in table["embed_text"]
+    assert "|213|" not in table["embed_text"], "the grid leaked into what gets matched"
+    # What is returned and cited is still the whole thing.
+    assert "213" in table["text"] and "|---|" in table["text"]
+
+
+def test_prose_chunks_carry_no_embed_text():
+    out = split_pages([(1, "Just ordinary prose, no grid anywhere in it.")])
+    assert all("embed_text" not in c for c in out)
