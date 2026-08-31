@@ -420,7 +420,7 @@ async def query(session_id: str, payload: QueryPayload):
     all_chunks = []
     for doc_id, rag_session in docs_to_query_items:
         try:
-            retrieved = await rag_session.query(payload.q, k=5)
+            retrieved = await rag_session.query(payload.q, k=8)
         except TimeoutError as e:
             raise HTTPException(status_code=504, detail=str(e))
         except Exception as e:

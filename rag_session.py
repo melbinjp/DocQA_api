@@ -18,9 +18,20 @@ class RAGSession:
 
         d_model = self.embedding_model.get_sentence_embedding_dimension()
 
-        # Create an in-memory FAISS index. IndexFlatL2 is a simple, fast index
-        # for dense vectors.
-        self.index = faiss.IndexFlatL2(d_model)
+        # Inner product over L2-normalised vectors, which is cosine similarity.
+        #
+        # This was IndexFlatL2 with unnormalised vectors, and the score reported
+        # to the user was `1 / (1 + l2_distance)`. That is not a similarity: it
+        # is an unbounded distance squashed into (0, 1] with no meaning at
+        # either end. Measured on the live Space, the five correctly retrieved
+        # passages for a question about multi-head attention scored 0.081 down
+        # to 0.076, and the UI rendered them as "Confidence: 8.1%" beside
+        # answers that were right. Cosine puts the same passages near 1.
+        #
+        # It also ranks better. Untitled L2 distance is sensitive to vector
+        # magnitude, and magnitude tracks chunk length more than relevance, so
+        # long chunks were being penalised for being long.
+        self.index = faiss.IndexFlatIP(d_model)
 
         # In-memory store for the actual text chunks corresponding to the vectors.
         # The index in this list is the ID used in the FAISS index.
@@ -44,8 +55,11 @@ class RAGSession:
         if not text_chunks:
             return
 
-        # FAISS requires a flat numpy array of float32.
-        embeddings_float32 = np.array(embeddings, dtype='float32')
+        # FAISS requires a flat numpy array of float32. Normalising in place is
+        # what turns the inner-product index into a cosine index; skip it and
+        # every score is meaningless and the ranking is magnitude-biased.
+        embeddings_float32 = np.ascontiguousarray(np.array(embeddings, dtype='float32'))
+        faiss.normalize_L2(embeddings_float32)
 
         # Add the new embeddings to the FAISS index.
         self.index.add(embeddings_float32)
@@ -64,7 +78,7 @@ class RAGSession:
 
         print(f"Session ingested {self.index.ntotal} chunks.")
 
-    async def query(self, query_text: str, k: int = 5) -> list[dict]:
+    async def query(self, query_text: str, k: int = 8) -> list[dict]:
         """
         Performs a similarity search against the session's document chunks.
 
@@ -86,14 +100,15 @@ class RAGSession:
                 asyncio.to_thread(self.embedding_model.encode, [query_text], convert_to_numpy=True),
                 timeout=30.0
             )
-            query_embedding = query_embedding_raw.astype('float32')
+            query_embedding = np.ascontiguousarray(query_embedding_raw.astype('float32'))
+            faiss.normalize_L2(query_embedding)
         except asyncio.TimeoutError:
             raise TimeoutError("Embedding generation for query timed out.")
 
-        # Search the index. `distances` are L2 distances, `indices` are the
-        # integer IDs of the vectors in the index.
+        # Search the index. With a normalised inner-product index, `scores` are
+        # cosine similarities in [-1, 1], already sorted high to low.
         try:
-            distances, indices = await asyncio.wait_for(
+            similarities, indices = await asyncio.wait_for(
                 asyncio.to_thread(self.index.search, query_embedding, min(k, self.index.ntotal)),
                 timeout=30.0
             )
@@ -103,9 +118,10 @@ class RAGSession:
         results = []
         for i, vector_id in enumerate(indices[0]):
             if vector_id != -1:
-                # A simple conversion from L2 distance to a normalized similarity score (0-1).
-                # This is a basic heuristic.
-                score = 1 / (1 + distances[0][i])
+                # Already a cosine similarity. Reported as-is rather than
+                # rescaled, because the last thing this number did was get
+                # dressed up as a confidence percentage it had no right to.
+                score = similarities[0][i]
 
                 results.append({
                     "text": self.chunks[vector_id],

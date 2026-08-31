@@ -5,6 +5,44 @@ import tempfile
 from markitdown import MarkItDown
 from .exceptions import DocumentLoaderError
 
+def _page_text_with_tables(page) -> str:
+    """Page text, with any table also rendered as a grid underneath it.
+
+    `get_text()` reads a table column by column, so every header arrives first
+    and the numbers follow as a bare stream. Page 9 of *Attention Is All You
+    Need* extracts as `N dmodel dff h dk dv ... base 6 512 2048 8 64 64 ... 213`.
+    Nothing joins `h` to its value, so asking what changes at 32 attention heads
+    retrieves a chunk of loose numbers that means nothing to the embedding and
+    nothing to the model reading it. Measured 2026-09-01: that question was
+    answered "not listed in Table 3" from the raw text and answered with the
+    right figures from the same table rendered as a grid.
+
+    The prose is kept as well as the grid, not replaced by it. Table detection
+    on a borderless academic table is approximate, and it merged fourteen
+    columns into three here, so the grid is an addition that can help rather
+    than a parse that has to be right.
+    """
+    text = page.get_text()
+    try:
+        tables = page.find_tables().tables
+    except Exception:
+        return text
+    if not tables:
+        return text
+
+    rendered = []
+    for table in tables:
+        try:
+            markdown = table.to_markdown()
+        except Exception:
+            continue
+        if markdown and markdown.strip():
+            rendered.append(markdown.strip())
+    if not rendered:
+        return text
+    return text + "\n\n" + "\n\n".join(rendered)
+
+
 def load_source_pages(raw: bytes, ext: str) -> list[tuple[int | None, str]]:
     """Extract text while keeping the page it came from.
 
@@ -39,7 +77,7 @@ def load_source_pages(raw: bytes, ext: str) -> list[tuple[int | None, str]]:
                 tmp_path = tmp.name
             try:
                 doc = fitz.open(tmp_path)
-                pages = [(i + 1, page.get_text()) for i, page in enumerate(doc)]
+                pages = [(i + 1, _page_text_with_tables(page)) for i, page in enumerate(doc)]
                 doc.close()
             finally:
                 if os.path.exists(tmp_path):
