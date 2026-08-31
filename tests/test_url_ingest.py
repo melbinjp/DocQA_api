@@ -213,21 +213,47 @@ async def test_upstream_error_body_is_never_echoed(allow_all_hosts):
 
 
 @pytest.mark.asyncio
-async def test_html_page_falls_back_to_the_reader(allow_all_hosts):
+async def test_html_is_read_in_process_not_sent_to_a_third_party(allow_all_hosts):
+    """HTML used to go to Jina Reader and only to Jina Reader.
+
+    On 2026-09-01 Jina started refusing this Space and every HTML URL came back
+    502 while the same request from a laptop answered 200. BeautifulSoup already
+    strips script, style, nav, header and footer in `load_source`, so the page
+    is read here. It also stops every pasted URL being forwarded to a stranger.
+    """
     client = FakeClient(
         {
             "https://example.com/article": FakeResponse(
-                200, {"content-type": "text/html"}, b"<html>...</html>",
+                200, {"content-type": "text/html; charset=utf-8"},
+                b"<html><body><p>Real article text.</p></body></html>",
                 "https://example.com/article",
-            ),
-            "https://r.jina.ai/https://example.com/article": FakeResponse(
-                200, {"content-type": "text/plain"}, b"# Article\n\ntext",
-                "https://r.jina.ai/https://example.com/article",
-            ),
+            )
         }
     )
 
     content, ext = await fetch_url_document(client, "https://example.com/article")
+
+    assert ext == "html"
+    assert b"Real article text." in content
+    assert not any("r.jina.ai" in u for u in client.requested)
+
+
+@pytest.mark.asyncio
+async def test_the_reader_is_still_the_fallback_when_a_fetch_is_refused(allow_all_hosts):
+    client = FakeClient(
+        {
+            "https://example.com/blocked": FakeResponse(
+                403, {"content-type": "text/html"}, b"<html>bot wall</html>",
+                "https://example.com/blocked",
+            ),
+            "https://r.jina.ai/https://example.com/blocked": FakeResponse(
+                200, {"content-type": "text/plain"}, b"# Article\n\ntext",
+                "https://r.jina.ai/https://example.com/blocked",
+            ),
+        }
+    )
+
+    content, ext = await fetch_url_document(client, "https://example.com/blocked")
 
     assert ext == "md"
     assert b"# Article" in content

@@ -54,6 +54,8 @@ _CONTENT_TYPE_EXT = {
     "text/csv": "csv",
 }
 
+_HTML_TYPES = {"text/html", "application/xhtml+xml"}
+
 _MAX_REDIRECTS = 5
 
 
@@ -112,7 +114,19 @@ async def fetch_url_document(client: httpx.AsyncClient, url: str) -> tuple[bytes
                 ext = suffix
         if ext:
             return response.content, ext
-        # HTML or unknown: Jina Reader reads it far better than we would.
+        if content_type in _HTML_TYPES or not content_type:
+            # Read the page ourselves. `load_source` strips script, style, nav,
+            # header and footer with BeautifulSoup, which is enough for a
+            # readable article and does not depend on anyone else being up.
+            #
+            # Jina Reader used to be the only route for HTML, and on 2026-09-01
+            # it started refusing this Space: every HTML URL came back 502,
+            # "Could not read that URL (content-type text/html)", while the same
+            # Jina request from a laptop answered 200. A third party that can
+            # take out the whole HTML path is not a dependency worth having for
+            # something BeautifulSoup already does in-process, and it also means
+            # every URL a user pastes stops being forwarded to a third party.
+            return response.content, "html"
         direct_error = f"content-type {content_type or 'unknown'}"
     except HTTPException:
         raise
