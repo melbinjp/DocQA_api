@@ -1,0 +1,66 @@
+name: Keep free tiers awake
+
+# Two free resources sleep, and both would be asleep exactly when someone opens the
+# demo link. The Space cold-boots in about 90 seconds after ~48h idle; the Qdrant free
+# cluster is SUSPENDED after about a week, which is not a slow start, it is an outage.
+#
+# Three days, not four. Qdrant suspends at roughly 7 days and GitHub's scheduled runs
+# are best-effort, so one missed run at 4-day spacing lands at 8 days and the cluster is
+# gone. At 3, a missed run lands at 6 and is still inside the window.
+#
+# GitHub disables schedules in a repository with no pushes for 60 days. If this stops
+# running, that is the first thing to check, not the workflow.
+
+on:
+  schedule:
+    - cron: '17 6 */3 * *'   # 06:17 UTC every third day. Off the hour on purpose: the
+                             # top of the hour is when GitHub's queue is most contended
+                             # and best-effort runs slip the furthest.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wake the Space
+        # The Space is public, so this needs no secret. A cold start takes about 90
+        # seconds, so the retry loop is the point rather than politeness.
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 \
+              https://melbinjp-docqa.hf.space/ || true)
+            echo "attempt $attempt: HTTP $code"
+            case "$code" in
+              200|301|302|307|308) echo "Space is awake"; exit 0 ;;
+            esac
+            sleep 30
+          done
+          echo "::warning::Space did not answer after 6 attempts. It may be building."
+
+      - name: Touch the Qdrant cluster
+        # Skipped rather than failed when the secret is absent, so this workflow is
+        # useful from the day it lands rather than from the day Qdrant is wired up.
+        env:
+          QDRANT_URL: ${{ vars.QDRANT_URL }}
+          QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+        run: |
+          if [ -z "$QDRANT_URL" ] || [ -z "$QDRANT_API_KEY" ]; then
+            echo "QDRANT_URL or QDRANT_API_KEY not set; nothing to keep awake yet."
+            exit 0
+          fi
+          code=$(curl -s -o /tmp/q.json -w '%{http_code}' --max-time 60 \
+            -H "api-key: $QDRANT_API_KEY" "${QDRANT_URL%/}/collections" || true)
+          echo "collections: HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::Qdrant did not answer with 200. A suspended cluster is the thing this job exists to prevent."
+            exit 1
+          fi
+          echo "Qdrant answered. Cluster is active."

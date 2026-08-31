@@ -26,7 +26,12 @@ class RAGSession:
         # The index in this list is the ID used in the FAISS index.
         self.chunks = []
 
-    def ingest(self, text_chunks: list[str], embeddings: np.ndarray):
+        # Parallel to self.chunks: the page each chunk came from, or None for
+        # formats without pages. Kept as a separate list rather than a dict so a
+        # FAISS vector id indexes both without a lookup that could disagree.
+        self.pages = []
+
+    def ingest(self, text_chunks: list[str], embeddings: np.ndarray, pages: list | None = None):
         """
         Processes and ingests text chunks and their pre-computed embeddings
         into the session's RAG store.
@@ -45,8 +50,17 @@ class RAGSession:
         # Add the new embeddings to the FAISS index.
         self.index.add(embeddings_float32)
 
-        # Store the corresponding text chunks.
+        # Store the corresponding text chunks, and the page each came from. The
+        # two lists must stay the same length or a citation would name the wrong
+        # page, which is worse than naming none.
         self.chunks.extend(text_chunks)
+        if pages is None:
+            pages = [None] * len(text_chunks)
+        if len(pages) != len(text_chunks):
+            raise ValueError(
+                f"{len(text_chunks)} chunks but {len(pages)} pages; a citation would be wrong"
+            )
+        self.pages.extend(pages)
 
         print(f"Session ingested {self.index.ntotal} chunks.")
 
@@ -95,7 +109,8 @@ class RAGSession:
 
                 results.append({
                     "text": self.chunks[vector_id],
-                    "score": float(score)
+                    "score": float(score),
+                    "page": self.pages[vector_id] if vector_id < len(self.pages) else None,
                 })
 
         return results

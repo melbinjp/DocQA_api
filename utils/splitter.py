@@ -25,3 +25,17 @@ def split_text(text: str, max_chars: int = 500, overlap: int = 100) -> List[str]
             break
         start += max_chars - overlap
     return chunks
+
+def split_pages(pages, max_chars: int = 500, overlap: int = 100) -> List[dict]:
+    """Split `[(page, text), ...]` into chunks that remember their page.
+
+    Splitting per page rather than over one concatenated string is what makes a
+    citation possible at all: once the pages are joined, no chunk can say where it
+    came from. It also stops a chunk straddling a page boundary and being
+    attributed to whichever page happened to come first.
+    """
+    out: List[dict] = []
+    for page, text in pages:
+        for chunk in split_text(text, max_chars=max_chars, overlap=overlap):
+            out.append({"text": chunk, "page": page})
+    return out
