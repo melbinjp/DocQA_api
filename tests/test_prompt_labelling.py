@@ -37,3 +37,31 @@ def test_the_text_is_never_altered_only_prefixed():
     text = "Exact text with |pipes| and 213 numbers."
     out = label_chunk({"text": text, "source": "a.pdf", "page": 9})
     assert out.endswith(text)
+
+
+# --- the manifest: what is loaded, regardless of what retrieval returned ---
+
+from utils.prompting import build_manifest
+
+
+def test_the_manifest_names_each_document_and_what_it_is():
+    m = build_manifest([
+        ("https://arxiv.org/pdf/1512.03385", "Deep Residual Learning for Image Recognition. We present a residual learning framework."),
+        ("https://arxiv.org/pdf/1810.04805", "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding."),
+    ])
+    assert "1512.03385" in m and "Residual" in m
+    assert "1810.04805" in m and "BERT" in m
+
+
+def test_the_manifest_is_short_enough_not_to_become_a_second_context():
+    m = build_manifest([("a.pdf", "x" * 5000)])
+    assert len(m) < 500
+
+
+def test_an_empty_session_has_no_manifest():
+    assert build_manifest([]) == ""
+
+
+def test_a_document_with_no_text_still_appears():
+    m = build_manifest([("only-name.pdf", "")])
+    assert "only-name.pdf" in m

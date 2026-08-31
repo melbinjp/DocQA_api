@@ -26,7 +26,7 @@ os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source, load_source_pages
 from utils.url_fetch import fetch_url_document, is_safe_url_async
-from utils.prompting import label_chunk
+from utils.prompting import build_manifest, label_chunk
 from utils.splitter import split_text, split_pages
 from utils.exceptions import DocumentLoaderError
 from rag_session import RAGSession
@@ -146,10 +146,12 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
 
     context = "\n\n".join(context_chunks)
     prompt = (
-        "Answer the following question using only the excerpts below. Each is "
+        "Answer the following question using only the material below. It begins "
+        "with the list of documents loaded in this session, then excerpts, each "
         "headed by the document and page it came from. When the question is "
-        "about which document says something, answer with those names. Do not "
-        "treat a reference list or bibliography as a document in its own right. "
+        "about which document says or covers something, answer from the list of "
+        "documents, not from excerpts: a reference list inside a paper names "
+        "other works and is not itself a document in this session. "
         "If the excerpts do not answer the question, say so instead of guessing. "
         "If the user asks in a language other than English, respond in their language.\n\n"
         f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"
@@ -477,6 +479,17 @@ async def query(session_id: str, payload: QueryPayload):
     # when neither says what it is. It also risks quietly attributing one
     # document's numbers to another.
     relevant_texts = [label_chunk(chunk) for chunk in top_chunks]
+
+    # And always say what is loaded, whatever retrieval happened to return. A
+    # question about the set of documents cannot be answered from chunks: the
+    # chunks that match "image recognition" best are a reference list, not the
+    # abstract of the paper that is about it.
+    manifest = build_manifest(
+        (rag.source, rag.chunks[0] if rag.chunks else "")
+        for rag in user_session.docs.values()
+    )
+    if manifest:
+        relevant_texts = [manifest] + relevant_texts
 
     # If streaming is requested, return a StreamingResponse
     if payload.stream:
