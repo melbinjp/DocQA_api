@@ -132,11 +132,24 @@ def split_text(text: str, max_chars: int = DEFAULT_MAX_CHARS,
     return chunks
 
 
+# A table's caption and column list are written above the grid and do not begin
+# with a pipe, so a plain run-splitter files them as prose and cuts them away
+# from the rows they name. That is the bug this guards: at most this many
+# non-blank lines directly above a grid are pulled into the table's block.
+_MAX_PREAMBLE_LINES = 3
+
+# And short. A caption is a sentence or two; a paragraph that happens to sit
+# directly above a grid with no blank line between them is not a caption, and
+# without this bound a whole page of prose gets swallowed into the table block.
+_MAX_PREAMBLE_CHARS = 500
+
+
 def _table_blocks(text: str):
     """Split `text` into `(is_table, segment)` runs.
 
-    A markdown table is a contiguous run of lines beginning with a pipe. Runs of
-    ordinary prose come back untouched.
+    A markdown table is a contiguous run of lines beginning with a pipe, plus
+    the caption lines immediately above it. Runs of ordinary prose come back
+    untouched.
     """
     lines = text.split("\n")
     runs, current, current_is_table = [], [], None
@@ -145,12 +158,29 @@ def _table_blocks(text: str):
         if current_is_table is None:
             current_is_table = is_table
         if is_table != current_is_table:
-            runs.append((current_is_table, "\n".join(current)))
+            runs.append([current_is_table, current])
             current, current_is_table = [], is_table
         current.append(line)
     if current:
-        runs.append((bool(current_is_table), "\n".join(current)))
-    return runs
+        runs.append([bool(current_is_table), current])
+
+    # Move the caption off the end of the prose run and onto the table it
+    # belongs to. "Off the end" is the non-blank lines after the last blank
+    # line, which is exactly the caption and column list as they are emitted.
+    for i in range(1, len(runs)):
+        if not runs[i][0] or runs[i - 1][0]:
+            continue
+        prose = runs[i - 1][1]
+        cut = len(prose)
+        while cut > 0 and prose[cut - 1].strip():
+            cut -= 1
+        attached = prose[cut:]
+        if (0 < len(attached) <= _MAX_PREAMBLE_LINES
+                and len("\n".join(attached)) <= _MAX_PREAMBLE_CHARS):
+            runs[i - 1][1] = prose[:cut]
+            runs[i][1] = attached + runs[i][1]
+
+    return [(is_table, "\n".join(body)) for is_table, body in runs if "".join(body).strip()]
 
 
 def _split_table(table: str, max_chars: int) -> List[str]:
@@ -173,8 +203,13 @@ def _split_table(table: str, max_chars: int) -> List[str]:
         return [table]
 
     rows = [r for r in table.split("\n") if r.strip()]
+    # Anything before the first pipe is the caption and column list. It repeats
+    # with the header, because a block of rows is unreadable without both.
+    lead = 0
+    while lead < len(rows) and not rows[lead].lstrip().startswith("|"):
+        lead += 1
     # A markdown table's first two lines are the header and its separator.
-    header = rows[:2] if len(rows) > 2 else []
+    header = rows[:lead + 2] if len(rows) > lead + 2 else rows[:lead]
     body = rows[len(header):]
     header_text = "\n".join(header)
 

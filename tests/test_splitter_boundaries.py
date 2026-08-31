@@ -105,7 +105,7 @@ def test_a_small_table_stays_in_one_chunk():
     """The regression: `params` and `213` ended up in different chunks, and the
     answer became 'the provided text does not contain information'."""
     out = split_pages([(9, "Some prose about results.\n" + TABLE)])
-    table_chunks = [c["text"] for c in out if c["text"].lstrip().startswith("|")]
+    table_chunks = [c["text"] for c in out if "|---|" in c["text"] or c["text"].lstrip().startswith("|")]
     assert len(table_chunks) == 1
     whole = table_chunks[0]
     assert "params" in whole and "213" in whole and "65" in whole
@@ -114,7 +114,7 @@ def test_a_small_table_stays_in_one_chunk():
 def test_a_table_too_big_for_one_chunk_repeats_its_header():
     rows = "".join(f"|row{i}|6|{i}|\n" for i in range(200))
     out = split_pages([(1, "|model|layers|params|\n|---|---|---|\n" + rows)], max_chars=400)
-    table_chunks = [c["text"] for c in out if c["text"].lstrip().startswith("|")]
+    table_chunks = [c["text"] for c in out if "|---|" in c["text"] or c["text"].lstrip().startswith("|")]
     assert len(table_chunks) > 1, "this table should have needed splitting"
     for chunk in table_chunks:
         assert "params" in chunk, "a row block lost its header, so its numbers are unnamed"
@@ -123,11 +123,48 @@ def test_a_table_too_big_for_one_chunk_repeats_its_header():
 def test_prose_around_a_table_is_still_chunked_normally():
     prose = "This is a sentence about the results. " * 60
     out = split_pages([(3, prose + "\n" + TABLE + "\n" + prose)], max_chars=500)
-    assert len([c for c in out if not c["text"].lstrip().startswith("|")]) > 1
-    assert len([c for c in out if c["text"].lstrip().startswith("|")]) == 1
+    assert len([c for c in out if not "|---|" in c["text"] or c["text"].lstrip().startswith("|")]) > 1
+    assert len([c for c in out if "|---|" in c["text"] or c["text"].lstrip().startswith("|")]) == 1
     assert {c["page"] for c in out} == {3}
 
 
 def test_a_page_that_is_only_a_table_still_produces_a_chunk():
     out = split_pages([(2, TABLE)])
     assert len(out) == 1 and "213" in out[0]["text"] and out[0]["page"] == 2
+
+
+def test_a_table_caption_is_not_severed_from_its_grid():
+    """The caption is the only natural language a grid has.
+
+    Measured on page 9 of Attention Is All You Need: with the caption filed as
+    prose, the chunk holding `base 65` and `big 213` began `|Col1|train<br>N d d
+    h` and was never retrieved at all for "how does the parameter count of the
+    big model compare to the base model". The caption says "Unlisted values are
+    identical to those of the base model", which is the language the question is
+    asked in.
+    """
+    page = (
+        "Some earlier prose that belongs to the page.\n"
+        "\n"
+        "Table 3: Variations on the architecture, against the base model.\n"
+        "Columns: model, layers, params.\n"
+        "|model|layers|params|\n"
+        "|---|---|---|\n"
+        "|base|6|65|\n"
+        "|big|6|213|\n"
+    )
+    out = split_pages([(9, page)])
+    holding = [c["text"] for c in out if "213" in c["text"]]
+    assert len(holding) == 1
+    chunk = holding[0]
+    assert "Table 3" in chunk, "the caption was cut away from the grid"
+    assert "base model" in chunk
+    assert "params" in chunk and "65" in chunk
+
+
+def test_a_long_paragraph_is_not_swallowed_as_a_caption():
+    """Only the lines directly above a grid attach, and only a few of them."""
+    prose = "\n".join(f"Sentence number {i} of ordinary prose." for i in range(20))
+    out = split_pages([(1, prose + "\n|a|b|\n|---|---|\n|1|2|\n")], max_chars=2000)
+    table = [c["text"] for c in out if "|---|" in c["text"]][0]
+    assert "Sentence number 0" not in table, "the whole paragraph was pulled into the table"

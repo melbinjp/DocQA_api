@@ -1,6 +1,7 @@
 """Minimal document loaders for the DocQA application."""
 
 import os
+import re
 import tempfile
 from markitdown import MarkItDown
 from .exceptions import DocumentLoaderError
@@ -30,17 +31,76 @@ def _page_text_with_tables(page) -> str:
     if not tables:
         return text
 
+    captions = _table_captions(text)
+
     rendered = []
-    for table in tables:
+    for position, table in enumerate(tables):
         try:
             markdown = table.to_markdown()
         except Exception:
             continue
-        if markdown and markdown.strip():
-            rendered.append(markdown.strip())
+        if not markdown or not markdown.strip():
+            continue
+        # A grid on its own is unretrievable, which is not the same as being
+        # badly ranked. Measured 2026-09-01: the Table 3 chunk held its header,
+        # `base ... 65` and `big ... 213`, and neither the dense nor the lexical
+        # retriever put it in the top eight for "how does the parameter count of
+        # the big model compare to the base model". It was never retrieved at
+        # all. The chunk began `|Col1|train<br>N d d h`, which has no sentence in
+        # it for an embedding to match and too few words for BM25 to weigh.
+        #
+        # Its caption reads "Table 3: Variations on the Transformer
+        # architecture. Unlisted values are identical to those of the base
+        # model." That is the language the question is asked in, and it is
+        # sitting in the prose a few lines above. Prepending it, with the column
+        # names spelled out, gives the grid something to be found by.
+        preamble = []
+        if position < len(captions):
+            preamble.append(captions[position])
+        columns = _column_names(markdown)
+        if columns:
+            preamble.append(f"Columns: {columns}.")
+        block = "\n".join(preamble + [markdown.strip()]) if preamble else markdown.strip()
+        rendered.append(block)
+
     if not rendered:
         return text
     return text + "\n\n" + "\n\n".join(rendered)
+
+
+# "Table 3: Variations on ..." or "Table 3. Variations on ...", to the end of
+# the sentence after it. Figure captions are deliberately not matched: a figure
+# has no grid to attach them to.
+_CAPTION = re.compile(r"^(Table\s+\d+[:.][\s\S]{0,400})", re.MULTILINE)
+
+
+def _table_captions(text: str) -> list[str]:
+    """Captions on the page, in the order they appear.
+
+    Paired with tables by position, which is the order `find_tables` returns
+    them in. Mispairing is possible on a page with two tables and one caption,
+    which is why the caption is added to the text rather than used to label it:
+    a wrong caption sitting above the right numbers is a retrieval hint that
+    misses, not a citation that lies.
+    """
+    out = []
+    for match in _CAPTION.finditer(text):
+        caption = " ".join(match.group(1).split())
+        # Trim to a sentence end so the caption does not trail off into the
+        # body text underneath it. Whole caption if there is no full stop.
+        end = caption.rfind(". ")
+        if end > 40:
+            caption = caption[:end + 1]
+        out.append(caption)
+    return out
+
+
+def _column_names(markdown: str) -> str:
+    """The header cells of a markdown table, as a plain comma-separated list."""
+    first = markdown.strip().split("\n", 1)[0]
+    cells = [c.replace("<br>", " ").strip() for c in first.split("|")]
+    cells = [" ".join(c.split()) for c in cells if c.strip() and not set(c.strip()) <= {"-"}]
+    return ", ".join(cells)
 
 
 def load_source_pages(raw: bytes, ext: str) -> list[tuple[int | None, str]]:
