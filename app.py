@@ -108,6 +108,21 @@ FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-2.5-flash"]
 # instead would have made every genuinely stuck call three times slower to report.
 LLM_TIMEOUT_SECONDS = 30.0
 
+# How many chunks are retrieved per document, and how many survive the merge to
+# become the prompt. These were 5 and a bare `[:5]` literal further down, which
+# meant raising one silently did nothing because the other still truncated.
+#
+# Eight rather than five because chunks are now 1500 characters of clean prose
+# rather than 500 characters cut mid-sentence, so the marginal chunk is worth
+# reading. Eight of them is around 12k characters, which is a small prompt for
+# the model receiving it.
+#
+# The merge across documents sorts by score, and that only became sound when the
+# index moved to cosine: the old 1/(1+l2) score was magnitude-biased, so scores
+# from two documents with different chunk lengths were not on the same scale.
+RETRIEVE_PER_DOC = 8
+CONTEXT_CHUNKS = 8
+
 # `wait_for` around `generate_content_stream(...)` bounds getting the iterator, not
 # consuming it. This bounds each chunk, so a stream that stalls mid-answer ends
 # instead of leaving the browser on an open connection with no error and no end.
@@ -420,7 +435,7 @@ async def query(session_id: str, payload: QueryPayload):
     all_chunks = []
     for doc_id, rag_session in docs_to_query_items:
         try:
-            retrieved = await rag_session.query(payload.q, k=8)
+            retrieved = await rag_session.query(payload.q, k=RETRIEVE_PER_DOC)
         except TimeoutError as e:
             raise HTTPException(status_code=504, detail=str(e))
         except Exception as e:
@@ -432,7 +447,7 @@ async def query(session_id: str, payload: QueryPayload):
         all_chunks.extend(retrieved)
 
     all_chunks.sort(key=lambda x: x['score'], reverse=True)
-    top_chunks = all_chunks[:5]
+    top_chunks = all_chunks[:CONTEXT_CHUNKS]
 
     relevant_sources = [QuerySource(**chunk) for chunk in top_chunks]
     relevant_texts = [chunk['text'] for chunk in top_chunks]
