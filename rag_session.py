@@ -1,7 +1,29 @@
+import datetime
+import re
+
 import faiss
 import numpy as np
+from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
-import datetime
+
+# How many candidates each retriever contributes before fusion. Wider than the
+# k finally returned, because the point of fusion is to let a chunk that one
+# retriever ranked eighth and the other ranked second come out near the top.
+CANDIDATE_POOL = 30
+
+# The constant in reciprocal rank fusion, from Cormack et al. 60 is the value
+# the paper uses and the one every implementation inherits; it damps the
+# difference between rank 1 and rank 2 so a single confident retriever cannot
+# monopolise the result.
+RRF_K = 60
+
+_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def _tokenize(text: str) -> list[str]:
+    """Words and numbers, lowercased. Numbers matter here more than usual: the
+    facts that dense retrieval misses in this corpus are table cells."""
+    return _TOKEN.findall(text.lower())
 
 class RAGSession:
     """
@@ -36,6 +58,22 @@ class RAGSession:
         # In-memory store for the actual text chunks corresponding to the vectors.
         # The index in this list is the ID used in the FAISS index.
         self.chunks = []
+
+        # Lexical half of the retriever, rebuilt whenever chunks are added.
+        #
+        # Dense embeddings are the wrong tool for part of a document and it is a
+        # measurable part. Asked "how does the parameter count of the big model
+        # compare to the base model", where the answer is a column headed
+        # `params x10^6` holding 65 and 213, the dense retriever pulled the prose
+        # of that page and never the table, and the API answered that it had no
+        # such information twice: once with 500-character chunks and again with
+        # 1500-character chunks and the table rendered as a grid. The chunk
+        # existed and was correct both times. A block of bare numbers simply has
+        # no embedding near "parameter count".
+        #
+        # `params` is right there as a literal token, which is what BM25 is for.
+        self.bm25 = None
+        self.tokenized = []
 
         # Parallel to self.chunks: the page each chunk came from, or None for
         # formats without pages. Kept as a separate list rather than a dict so a
@@ -76,6 +114,12 @@ class RAGSession:
             )
         self.pages.extend(pages)
 
+        # Rebuilt rather than updated: BM25 scoring depends on corpus-wide
+        # document frequencies and average length, so an index built over the
+        # first document would score the second against the wrong statistics.
+        self.tokenized.extend(_tokenize(c) for c in text_chunks)
+        self.bm25 = BM25Okapi(self.tokenized) if self.tokenized else None
+
         print(f"Session ingested {self.index.ntotal} chunks.")
 
     async def query(self, query_text: str, k: int = 8) -> list[dict]:
@@ -107,27 +151,56 @@ class RAGSession:
 
         # Search the index. With a normalised inner-product index, `scores` are
         # cosine similarities in [-1, 1], already sorted high to low.
+        pool = min(CANDIDATE_POOL, self.index.ntotal)
         try:
             similarities, indices = await asyncio.wait_for(
-                asyncio.to_thread(self.index.search, query_embedding, min(k, self.index.ntotal)),
+                asyncio.to_thread(self.index.search, query_embedding, pool),
                 timeout=30.0
             )
         except asyncio.TimeoutError:
             raise TimeoutError("FAISS search for query timed out.")
 
-        results = []
-        for i, vector_id in enumerate(indices[0]):
-            if vector_id != -1:
-                # Already a cosine similarity. Reported as-is rather than
-                # rescaled, because the last thing this number did was get
-                # dressed up as a confidence percentage it had no right to.
-                score = similarities[0][i]
+        dense_ranked = [int(v) for v in indices[0] if v != -1]
+        cosine = {int(v): float(similarities[0][i])
+                  for i, v in enumerate(indices[0]) if v != -1}
 
-                results.append({
-                    "text": self.chunks[vector_id],
-                    "score": float(score),
-                    "page": self.pages[vector_id] if vector_id < len(self.pages) else None,
-                })
+        # Lexical ranking over the same chunks.
+        lexical_ranked = []
+        if self.bm25 is not None:
+            bm25_scores = await asyncio.to_thread(self.bm25.get_scores, _tokenize(query_text))
+            lexical_ranked = [int(i) for i in np.argsort(bm25_scores)[::-1][:pool]
+                              if bm25_scores[i] > 0]
+
+        # Reciprocal rank fusion. Ranks rather than scores, because a cosine and
+        # a BM25 score are not on the same scale and never will be; normalising
+        # them against each other would be inventing a relationship.
+        fused: dict[int, float] = {}
+        for ranking in (dense_ranked, lexical_ranked):
+            for rank, vector_id in enumerate(ranking):
+                fused[vector_id] = fused.get(vector_id, 0.0) + 1.0 / (RRF_K + rank + 1)
+
+        order = sorted(fused, key=lambda v: fused[v], reverse=True)[:k]
+
+        results = []
+        for vector_id in order:
+            # The reported score stays a cosine, so it means one thing wherever
+            # it appears. A chunk that only BM25 found is not in the dense
+            # top-`pool`, so its cosine is recovered from the stored vector
+            # rather than left blank or filled with a fused rank score that
+            # would look like a similarity and not be one.
+            score = cosine.get(vector_id)
+            if score is None:
+                try:
+                    vec = self.index.reconstruct(vector_id)
+                    score = float(np.dot(query_embedding[0], vec))
+                except Exception:
+                    score = 0.0
+
+            results.append({
+                "text": self.chunks[vector_id],
+                "score": float(score),
+                "page": self.pages[vector_id] if vector_id < len(self.pages) else None,
+            })
 
         return results
 

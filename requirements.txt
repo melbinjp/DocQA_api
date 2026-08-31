@@ -10,6 +10,8 @@ requests>=2.31.0
 python-multipart>=0.0.6
 huggingface_hub>=0.23.1
 faiss-cpu>=1.8.0
+# Lexical half of hybrid retrieval. Pure Python, no build step, ~10KB.
+rank-bm25==0.2.2
 pytest>=8.2.2
 pytest-mock>=3.14.0
 httpx>=0.25.2

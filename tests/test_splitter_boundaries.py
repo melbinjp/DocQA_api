@@ -89,3 +89,45 @@ def test_overlap_at_or_above_max_is_rejected_rather_than_looping():
 
     with pytest.raises(ValueError):
         split_text("some text", max_chars=100, overlap=100)
+
+
+# --- tables are one fact, and must not be cut into numbers with no names ---
+
+TABLE = (
+    "|model|layers|params|\n"
+    "|---|---|---|\n"
+    "|base|6|65|\n"
+    "|big|6|213|\n"
+)
+
+
+def test_a_small_table_stays_in_one_chunk():
+    """The regression: `params` and `213` ended up in different chunks, and the
+    answer became 'the provided text does not contain information'."""
+    out = split_pages([(9, "Some prose about results.\n" + TABLE)])
+    table_chunks = [c["text"] for c in out if c["text"].lstrip().startswith("|")]
+    assert len(table_chunks) == 1
+    whole = table_chunks[0]
+    assert "params" in whole and "213" in whole and "65" in whole
+
+
+def test_a_table_too_big_for_one_chunk_repeats_its_header():
+    rows = "".join(f"|row{i}|6|{i}|\n" for i in range(200))
+    out = split_pages([(1, "|model|layers|params|\n|---|---|---|\n" + rows)], max_chars=400)
+    table_chunks = [c["text"] for c in out if c["text"].lstrip().startswith("|")]
+    assert len(table_chunks) > 1, "this table should have needed splitting"
+    for chunk in table_chunks:
+        assert "params" in chunk, "a row block lost its header, so its numbers are unnamed"
+
+
+def test_prose_around_a_table_is_still_chunked_normally():
+    prose = "This is a sentence about the results. " * 60
+    out = split_pages([(3, prose + "\n" + TABLE + "\n" + prose)], max_chars=500)
+    assert len([c for c in out if not c["text"].lstrip().startswith("|")]) > 1
+    assert len([c for c in out if c["text"].lstrip().startswith("|")]) == 1
+    assert {c["page"] for c in out} == {3}
+
+
+def test_a_page_that_is_only_a_table_still_produces_a_chunk():
+    out = split_pages([(2, TABLE)])
+    assert len(out) == 1 and "213" in out[0]["text"] and out[0]["page"] == 2

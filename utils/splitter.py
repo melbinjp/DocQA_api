@@ -132,6 +132,66 @@ def split_text(text: str, max_chars: int = DEFAULT_MAX_CHARS,
     return chunks
 
 
+def _table_blocks(text: str):
+    """Split `text` into `(is_table, segment)` runs.
+
+    A markdown table is a contiguous run of lines beginning with a pipe. Runs of
+    ordinary prose come back untouched.
+    """
+    lines = text.split("\n")
+    runs, current, current_is_table = [], [], None
+    for line in lines:
+        is_table = line.lstrip().startswith("|")
+        if current_is_table is None:
+            current_is_table = is_table
+        if is_table != current_is_table:
+            runs.append((current_is_table, "\n".join(current)))
+            current, current_is_table = [], is_table
+        current.append(line)
+    if current:
+        runs.append((bool(current_is_table), "\n".join(current)))
+    return runs
+
+
+def _split_table(table: str, max_chars: int) -> List[str]:
+    """Chunk a markdown table without orphaning its rows from its header.
+
+    A table is one fact spread over a grid, and cutting it anywhere destroys the
+    only thing that makes the numbers mean anything. Measured on page 9 of
+    *Attention Is All You Need*: rendering the table as a grid was not enough on
+    its own, because the generic splitter then cut it into a chunk holding
+    `params` and a separate 117-character chunk holding
+    `|big|...|**4.33**<br>**26.4**<br>213|`. Asked for the big model's parameter
+    count, retrieval returned the row without the header, which is a number with
+    no name attached, and the answer was still "the provided text does not
+    contain information".
+
+    So the table is kept whole where it fits, and where it does not, the header
+    rows are repeated at the top of every piece.
+    """
+    if len(table) <= max_chars:
+        return [table]
+
+    rows = [r for r in table.split("\n") if r.strip()]
+    # A markdown table's first two lines are the header and its separator.
+    header = rows[:2] if len(rows) > 2 else []
+    body = rows[len(header):]
+    header_text = "\n".join(header)
+
+    chunks, current = [], list(header)
+    current_len = len(header_text)
+    for row in body:
+        if current_len + len(row) + 1 > max_chars and len(current) > len(header):
+            chunks.append("\n".join(current))
+            current = list(header)
+            current_len = len(header_text)
+        current.append(row)
+        current_len += len(row) + 1
+    if len(current) > len(header):
+        chunks.append("\n".join(current))
+    return chunks or [table]
+
+
 def split_pages(pages, max_chars: int = DEFAULT_MAX_CHARS,
                 overlap: int = DEFAULT_OVERLAP) -> List[dict]:
     """Split `[(page, text), ...]` into chunks that remember their page.
@@ -143,6 +203,12 @@ def split_pages(pages, max_chars: int = DEFAULT_MAX_CHARS,
     """
     out: List[dict] = []
     for page, text in pages:
-        for chunk in split_text(text, max_chars=max_chars, overlap=overlap):
-            out.append({"text": chunk, "page": page})
+        for is_table, segment in _table_blocks(text):
+            if not segment.strip():
+                continue
+            pieces = (_split_table(segment, max_chars) if is_table
+                      else split_text(segment, max_chars=max_chars, overlap=overlap))
+            for chunk in pieces:
+                if chunk.strip():
+                    out.append({"text": chunk, "page": page})
     return out
