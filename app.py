@@ -26,6 +26,7 @@ os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source, load_source_pages
 from utils.url_fetch import fetch_url_document, is_safe_url_async
+from utils.prompting import label_chunk
 from utils.splitter import split_text, split_pages
 from utils.exceptions import DocumentLoaderError
 from rag_session import RAGSession
@@ -145,7 +146,11 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
 
     context = "\n\n".join(context_chunks)
     prompt = (
-        "Answer the following question based only on the provided context. "
+        "Answer the following question using only the excerpts below. Each is "
+        "headed by the document and page it came from. When the question is "
+        "about which document says something, answer with those names. Do not "
+        "treat a reference list or bibliography as a document in its own right. "
+        "If the excerpts do not answer the question, say so instead of guessing. "
         "If the user asks in a language other than English, respond in their language.\n\n"
         f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"
     )
@@ -460,7 +465,18 @@ async def query(session_id: str, payload: QueryPayload):
     top_chunks = all_chunks[:CONTEXT_CHUNKS]
 
     relevant_sources = [QuerySource(**chunk) for chunk in top_chunks]
-    relevant_texts = [chunk['text'] for chunk in top_chunks]
+    # Label every excerpt with where it came from.
+    #
+    # The prompt used to be the chunk texts joined by blank lines and nothing
+    # else, so the model was never told which document it was reading. With one
+    # document that is merely wasteful. With eight in a session it makes a whole
+    # class of question unanswerable, and measured 2026-09-01 it did: asked
+    # which of the loaded papers was about image recognition, the answer listed
+    # three entries out of ResNet's own bibliography instead of naming ResNet,
+    # because a chunk of reference list and a chunk of a paper look identical
+    # when neither says what it is. It also risks quietly attributing one
+    # document's numbers to another.
+    relevant_texts = [label_chunk(chunk) for chunk in top_chunks]
 
     # If streaming is requested, return a StreamingResponse
     if payload.stream:
