@@ -20,10 +20,20 @@ def label_chunk(chunk: dict) -> str:
     return f"[From {where}]\n{chunk['text']}"
 
 
-# How much of a document's opening to show in the manifest. A title and the
-# first line or two of an abstract is enough to say what a paper is; more turns
-# the manifest into a second context.
-MANIFEST_SNIPPET_CHARS = 260
+# How much of a document's opening to show in the manifest.
+#
+# This was 260 characters, which on an academic paper is the title followed by a
+# wall of author names and nothing about what the paper does. Measured
+# 2026-09-01 on the GPT-3 paper: 260 characters ends inside the author list, and
+# "175 billion parameters" sits at character 1266. Asked which of two models has
+# more parameters, the answer had BERT's 340 million from a retrieved chunk and
+# nothing for GPT-3, because the question is about comparing documents and the
+# retriever matched benchmark prose instead of the abstract. The manifest exists
+# for exactly that kind of question and was too short to answer it.
+#
+# 900 characters reaches into the abstract on a paper and still costs less than
+# one retrieved chunk per document.
+MANIFEST_SNIPPET_CHARS = 900
 
 
 def build_manifest(documents) -> str:

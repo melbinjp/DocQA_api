@@ -54,8 +54,12 @@ def test_the_manifest_names_each_document_and_what_it_is():
 
 
 def test_the_manifest_is_short_enough_not_to_become_a_second_context():
+    """Bounded by the snippet size rather than a magic number, so raising the
+    snippet does not silently break the intent this guards."""
+    from utils.prompting import MANIFEST_SNIPPET_CHARS
+
     m = build_manifest([("a.pdf", "x" * 5000)])
-    assert len(m) < 500
+    assert len(m) < MANIFEST_SNIPPET_CHARS + 60
 
 
 def test_an_empty_session_has_no_manifest():
@@ -65,3 +69,34 @@ def test_an_empty_session_has_no_manifest():
 def test_a_document_with_no_text_still_appears():
     m = build_manifest([("only-name.pdf", "")])
     assert "only-name.pdf" in m
+
+
+def test_the_manifest_reaches_past_an_author_list():
+    """260 characters on an academic paper is the title and then names.
+
+    Measured on the GPT-3 paper: the first 260 characters end inside the author
+    block, and the fact that identifies the paper, "175 billion parameters", is
+    at character 1266. A manifest that says who wrote something but not what it
+    is cannot answer a question about which document covers what.
+    """
+    from utils.prompting import MANIFEST_SNIPPET_CHARS
+
+    opening = (
+        "Language Models are Few-Shot Learners "
+        + "Author Name " * 40
+        + "Abstract Recent work has demonstrated substantial gains. "
+        + "Here we train GPT-3, with 175 billion parameters."
+    )
+    m = build_manifest([("https://arxiv.org/pdf/2005.14165", opening)])
+    assert "Few-Shot Learners" in m
+    assert MANIFEST_SNIPPET_CHARS >= 700, "too short to clear an author block"
+
+
+def test_the_manifest_still_costs_less_than_a_retrieved_chunk():
+    """It is a list of what is loaded, not a second context."""
+    from utils.prompting import MANIFEST_SNIPPET_CHARS
+    from utils.splitter import DEFAULT_MAX_CHARS
+
+    assert MANIFEST_SNIPPET_CHARS < DEFAULT_MAX_CHARS
+    m = build_manifest([(f"doc{i}.pdf", "x" * 5000) for i in range(8)])
+    assert len(m) < 8 * (MANIFEST_SNIPPET_CHARS + 40)
