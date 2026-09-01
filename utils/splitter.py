@@ -280,3 +280,75 @@ def split_pages(pages, max_chars: int = DEFAULT_MAX_CHARS,
                         item["embed_text"] = lead
                 out.append(item)
     return out
+
+
+# Sub-windows: a second, smaller view of the same chunk, so a fact buried inside
+# a chunk about something else can still be found.
+#
+# Measured 2026-09-01 against the live Space. The RAG paper says "Each Wikipedia
+# article is split into disjoint 100-word chunks, to make a total of 21M
+# documents". That sentence sits inside a 1435-character chunk that opens "To
+# estimate the probability of an hypothesis y we run an additional forward pass
+# for each document z". The chunk is mostly about marginalising over documents,
+# so its vector is about that, and three differently-worded questions about the
+# size of the index all failed to retrieve it. The chunk was right, indexed, and
+# unreachable.
+#
+# Shrinking chunks would fix it and undo the largest accuracy win here. So each
+# long chunk is indexed several times over: once whole, and once per window
+# across it. Every vector points back at the same parent, and the parent is what
+# is retrieved, read and cited. It is the trick already used for tables, where a
+# caption is indexed and a grid is returned, applied to prose.
+SUBWINDOW_CHARS = 600
+SUBWINDOW_STRIDE = 400
+
+# Below this a chunk is already about one thing and a window would only repeat
+# it at the cost of another vector.
+SUBWINDOW_MIN_CHUNK = 800
+
+# Windowing costs about 2.3x the characters to embed, measured on this corpus:
+# the GPT-3 paper goes from 219 chunks to 876 vectors but only from 272k to 624k
+# characters, because a window is shorter than the chunk it came from. That is
+# affordable for a 75-page paper on the free tier and would not be for a book.
+# Past this many chunks the windows are dropped rather than risking an ingest
+# that times out, which would lose the document entirely instead of degrading
+# how findable one buried sentence is.
+MAX_CHUNKS_FOR_WINDOWING = 400
+
+
+def subwindows(text: str, size: int = SUBWINDOW_CHARS,
+               stride: int = SUBWINDOW_STRIDE) -> List[str]:
+    """Overlapping views across `text`, or [] if it is short enough already."""
+    if len(text) <= size:
+        return []
+    out, start = [], 0
+    while start < len(text):
+        piece = text[start:start + size].strip()
+        if piece:
+            out.append(piece)
+        if start + size >= len(text):
+            break
+        start += stride
+    return out
+
+
+def index_entries(chunks: List[dict]) -> List[tuple]:
+    """`[(text_to_embed, parent_chunk_index), ...]`.
+
+    A table contributes one entry, its caption, because the grid is not
+    something a question ever looks like. Everything else contributes itself
+    plus its windows.
+    """
+    windowing = len(chunks) <= MAX_CHUNKS_FOR_WINDOWING
+    entries = []
+    for parent, chunk in enumerate(chunks):
+        embed_text = chunk.get("embed_text")
+        if embed_text:
+            entries.append((embed_text, parent))
+            continue
+        text = chunk["text"]
+        entries.append((text, parent))
+        if windowing and len(text) >= SUBWINDOW_MIN_CHUNK:
+            for window in subwindows(text):
+                entries.append((window, parent))
+    return entries

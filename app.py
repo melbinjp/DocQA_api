@@ -27,7 +27,7 @@ from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source, load_source_pages
 from utils.url_fetch import fetch_url_document, is_safe_url_async
 from utils.prompting import build_manifest, label_chunk
-from utils.splitter import split_text, split_pages
+from utils.splitter import split_text, split_pages, index_entries
 from utils.exceptions import DocumentLoaderError
 from rag_session import RAGSession
 from user_session import UserSession
@@ -369,7 +369,12 @@ async def ingest(session_id: str, request: Request):
     # 2026-09-01, the Table 3 chunk was not retrieved for a question its own
     # caption answers, while its neighbours scored 0.36 to 0.47. The full grid
     # is still what goes into the prompt and still what gets cited.
-    embed_inputs = [c.get("embed_text") or c["text"] for c in page_chunks]
+    # One chunk can own several vectors. A long chunk is indexed whole and again
+    # window by window, so a fact buried inside a chunk about something else is
+    # still reachable; whichever vector matches, the parent chunk is returned.
+    entries = index_entries(page_chunks)
+    embed_inputs = [text for text, _ in entries]
+    vector_parents = [parent for _, parent in entries]
     if not chunks:
         raise HTTPException(status_code=400, detail="The document is too short to be processed.")
 
@@ -377,7 +382,7 @@ async def ingest(session_id: str, request: Request):
     # This logic checks the user's session cache for existing chunk embeddings.
     # It only sends chunks that have not been seen before to the embedding model,
     # avoiding redundant, expensive computations.
-    ordered_embeddings = [None] * len(chunks)
+    ordered_embeddings = [None] * len(embed_inputs)
     chunks_to_encode = []
     indices_of_new_chunks = []
 
@@ -426,7 +431,7 @@ async def ingest(session_id: str, request: Request):
     doc_id = uuid.uuid4().hex
     rag_session = RAGSession(source=source_name, embedding_model=app.state.embedding_model)
     # Pass the pre-computed embeddings to the new ingest method
-    rag_session.ingest(chunks, all_embeddings_np, chunk_pages)
+    rag_session.ingest(chunks, all_embeddings_np, chunk_pages, vector_parents)
     user_session.add_doc(doc_id, rag_session)
 
     return IngestResponse(doc_id=doc_id, source=source_name, num_chunks=len(chunks))

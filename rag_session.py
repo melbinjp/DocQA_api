@@ -4,12 +4,17 @@ import re
 import faiss
 import numpy as np
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
 
 # How many candidates each retriever contributes before fusion. Wider than the
 # k finally returned, because the point of fusion is to let a chunk that one
 # retriever ranked eighth and the other ranked second come out near the top.
 CANDIDATE_POOL = 30
+
+# The dense side searches vectors, and a long chunk owns several of them, so a
+# pool of 30 vectors can collapse to six or seven distinct chunks. This is the
+# vector pool, sized so the number of distinct chunks reaching fusion stays in
+# the same range as the lexical side's.
+DENSE_VECTOR_POOL = 120
 
 # The constant in reciprocal rank fusion, from Cormack et al. 60 is the value
 # the paper uses and the one every implementation inherits; it damps the
@@ -55,9 +60,25 @@ class RAGSession:
         # long chunks were being penalised for being long.
         self.index = faiss.IndexFlatIP(d_model)
 
-        # In-memory store for the actual text chunks corresponding to the vectors.
-        # The index in this list is the ID used in the FAISS index.
+        # In-memory store for the actual text chunks. This is NO LONGER parallel
+        # to the FAISS index: one chunk can own several vectors, so a vector id
+        # is mapped through self.vector_parent to get here.
         self.chunks = []
+
+        # vector id -> index into self.chunks.
+        #
+        # A long chunk is indexed once whole and once per window across it, so a
+        # fact buried inside a chunk about something else is still reachable. The
+        # RAG paper's "21M documents" sat in a 1435-character chunk that opens
+        # "To estimate the probability of an hypothesis y"; three differently
+        # worded questions about index size all failed to retrieve it, because
+        # the chunk's vector is about marginalising over documents. Whichever
+        # vector matches, the parent chunk is what is returned, read and cited.
+        self.vector_parent = []
+
+        # parent index -> one of its vector ids, so a chunk found only by the
+        # lexical retriever can still have its cosine recovered for display.
+        self.parent_vector = {}
 
         # Lexical half of the retriever, rebuilt whenever chunks are added.
         #
@@ -80,7 +101,8 @@ class RAGSession:
         # FAISS vector id indexes both without a lookup that could disagree.
         self.pages = []
 
-    def ingest(self, text_chunks: list[str], embeddings: np.ndarray, pages: list | None = None):
+    def ingest(self, text_chunks: list[str], embeddings: np.ndarray,
+               pages: list | None = None, vector_parents: list | None = None):
         """
         Processes and ingests text chunks and their pre-computed embeddings
         into the session's RAG store.
@@ -99,8 +121,27 @@ class RAGSession:
         embeddings_float32 = np.ascontiguousarray(np.array(embeddings, dtype='float32'))
         faiss.normalize_L2(embeddings_float32)
 
+        # One vector per row of `embeddings`, each owned by a chunk. Without an
+        # explicit mapping the relationship is one to one, which is what a caller
+        # that knows nothing about windows should get.
+        if vector_parents is None:
+            vector_parents = list(range(len(text_chunks)))
+        if len(vector_parents) != len(embeddings_float32):
+            raise ValueError(
+                f"{len(embeddings_float32)} vectors but {len(vector_parents)} owners; "
+                "a citation would name the wrong chunk"
+            )
+
+        base_vector = self.index.ntotal
+        base_chunk = len(self.chunks)
+
         # Add the new embeddings to the FAISS index.
         self.index.add(embeddings_float32)
+
+        for offset, parent in enumerate(vector_parents):
+            absolute_parent = base_chunk + parent
+            self.vector_parent.append(absolute_parent)
+            self.parent_vector.setdefault(absolute_parent, base_vector + offset)
 
         # Store the corresponding text chunks, and the page each came from. The
         # two lists must stay the same length or a citation would name the wrong
@@ -151,20 +192,31 @@ class RAGSession:
 
         # Search the index. With a normalised inner-product index, `scores` are
         # cosine similarities in [-1, 1], already sorted high to low.
-        pool = min(CANDIDATE_POOL, self.index.ntotal)
+        pool = min(CANDIDATE_POOL, len(self.chunks))
+        vector_pool = min(DENSE_VECTOR_POOL, self.index.ntotal)
         try:
             similarities, indices = await asyncio.wait_for(
-                asyncio.to_thread(self.index.search, query_embedding, pool),
+                asyncio.to_thread(self.index.search, query_embedding, vector_pool),
                 timeout=30.0
             )
         except asyncio.TimeoutError:
             raise TimeoutError("FAISS search for query timed out.")
 
-        dense_ranked = [int(v) for v in indices[0] if v != -1]
-        cosine = {int(v): float(similarities[0][i])
-                  for i, v in enumerate(indices[0]) if v != -1}
+        # Collapse vectors to the chunks that own them, keeping the best rank
+        # and the best cosine each chunk achieved. Several windows of one chunk
+        # can all match; that is one result, not four.
+        dense_ranked, cosine = [], {}
+        for position, vector_id in enumerate(indices[0]):
+            if vector_id == -1:
+                continue
+            parent = self.vector_parent[int(vector_id)]
+            similarity = float(similarities[0][position])
+            if parent not in cosine or similarity > cosine[parent]:
+                cosine[parent] = similarity
+            if parent not in dense_ranked:
+                dense_ranked.append(parent)
 
-        # Lexical ranking over the same chunks.
+        # Lexical ranking, which is over whole chunks already.
         lexical_ranked = []
         if self.bm25 is not None:
             bm25_scores = await asyncio.to_thread(self.bm25.get_scores, _tokenize(query_text))
@@ -176,30 +228,30 @@ class RAGSession:
         # them against each other would be inventing a relationship.
         fused: dict[int, float] = {}
         for ranking in (dense_ranked, lexical_ranked):
-            for rank, vector_id in enumerate(ranking):
-                fused[vector_id] = fused.get(vector_id, 0.0) + 1.0 / (RRF_K + rank + 1)
+            for rank, parent in enumerate(ranking):
+                fused[parent] = fused.get(parent, 0.0) + 1.0 / (RRF_K + rank + 1)
 
-        order = sorted(fused, key=lambda v: fused[v], reverse=True)[:k]
+        order = sorted(fused, key=lambda p: fused[p], reverse=True)[:k]
 
         results = []
-        for vector_id in order:
+        for parent in order:
             # The reported score stays a cosine, so it means one thing wherever
-            # it appears. A chunk that only BM25 found is not in the dense
-            # top-`pool`, so its cosine is recovered from the stored vector
-            # rather than left blank or filled with a fused rank score that
-            # would look like a similarity and not be one.
-            score = cosine.get(vector_id)
+            # it appears. A chunk only the lexical side found has no cosine yet,
+            # so it is recovered from one of that chunk's stored vectors rather
+            # than left blank or filled with a fused rank score that would look
+            # like a similarity and not be one.
+            score = cosine.get(parent)
             if score is None:
                 try:
-                    vec = self.index.reconstruct(vector_id)
+                    vec = self.index.reconstruct(self.parent_vector[parent])
                     score = float(np.dot(query_embedding[0], vec))
                 except Exception:
                     score = 0.0
 
             results.append({
-                "text": self.chunks[vector_id],
+                "text": self.chunks[parent],
                 "score": float(score),
-                "page": self.pages[vector_id] if vector_id < len(self.pages) else None,
+                "page": self.pages[parent] if parent < len(self.pages) else None,
             })
 
         return results
