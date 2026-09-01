@@ -194,3 +194,27 @@ def test_by_default_only_scanned_pages_are_sent():
     raw = make_pdf(["", "word " * 200])
     reasons = [r for _, _, r in pages_for_vision(raw)]
     assert reasons == ["no-text"]
+
+
+def test_every_chunk_of_a_transcript_is_marked_not_just_the_first():
+    """Marking the page and then splitting it marks one chunk in four.
+
+    Measured on the live Space: a scanned page became four chunks and only the
+    first carried "[Read from the page image]", so three of them were
+    indistinguishable from the document's own words. The guarantee is that a
+    reader can always tell, which means the marker belongs on the chunk.
+    """
+    from utils.splitter import split_pages
+
+    long_transcript = ("The transcribed sentence repeats. " * 200)
+    chunks = split_pages([(1, long_transcript)])
+    assert len(chunks) > 1, "this fixture needs to produce several chunks"
+
+    marked = [wrap_transcript(c["text"]) for c in chunks]
+    assert all(is_transcript(m) for m in marked)
+    assert all(m.count("[Read from the page image]") == 1 for m in marked)
+
+
+def test_marking_a_chunk_does_not_change_what_it_says():
+    body = "Row: base 6 512 2048 8 64 64 0.1 0.1 100K 4.92 25.8 65"
+    assert body in wrap_transcript(body)

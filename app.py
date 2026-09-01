@@ -27,8 +27,8 @@ from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source, load_source_pages
 from utils.url_fetch import fetch_url_document, is_safe_url_async
 from utils.prompting import build_manifest, label_chunk
-from utils.vision import (MAX_VISION_PAGES, merge as vision_merge,
-                          pages_for_vision, transcribe_pages)
+from utils.vision import (MAX_VISION_PAGES, pages_for_vision,
+                          transcribe_pages, wrap_transcript)
 from utils.splitter import split_text, split_pages, index_entries
 from utils.exceptions import DocumentLoaderError
 from rag_session import RAGSession
@@ -376,6 +376,7 @@ async def ingest(session_id: str, request: Request):
     # Look at the pages a text extractor cannot read: scans, charts, and tables
     # it mangles. Additive, and never allowed to fail the ingest on its own.
     vision_note = ""
+    vision_transcripts = {}
     if source_ext.lower().strip(".") == "pdf" and VISION_ENABLED:
         try:
             targets = await asyncio.to_thread(
@@ -387,8 +388,13 @@ async def ingest(session_id: str, request: Request):
                 transcripts, vision_errors = await transcribe_pages(
                     ai_client, [MODEL_NAME] + FALLBACK_MODELS, targets
                 )
-                if transcripts:
-                    pages = vision_merge(pages, transcripts)
+                # Kept apart from the extracted pages rather than concatenated
+                # onto them. Concatenating put the marker at the top of the page
+                # and the splitter then cut the page into four, so three of the
+                # four chunks carried no sign of where they came from. The whole
+                # point is that a reader can tell a transcription from the
+                # document's own words, so every transcript chunk carries it.
+                vision_transcripts = transcripts
                 print(f"Vision read {len(transcripts)} of {len(targets)} pages. "
                       f"errors={vision_errors[:3]}")
                 if not transcripts and vision_errors:
@@ -398,7 +404,7 @@ async def ingest(session_id: str, request: Request):
             vision_note = f" The page reader could not run ({type(e).__name__}: {e})."
             print(f"Vision pass skipped: {e}")
 
-    if not pages or not any(t and t.strip() for _, t in pages):
+    if (not pages or not any(t and t.strip() for _, t in pages)) and not vision_transcripts:
         # Say why, when there is a why. A scanned PDF that fails silently is
         # indistinguishable from an unsupported one, and neither the user nor
         # anyone debugging it can tell which they have.
@@ -408,6 +414,11 @@ async def ingest(session_id: str, request: Request):
         )
 
     page_chunks = split_pages(pages)
+    for chunk in split_pages(sorted(vision_transcripts.items())):
+        chunk["text"] = wrap_transcript(chunk["text"])
+        page_chunks.append(chunk)
+    page_chunks.sort(key=lambda c: (c["page"] is None, c["page"] or 0))
+
     chunks = [c["text"] for c in page_chunks]
     chunk_pages = [c["page"] for c in page_chunks]
 
