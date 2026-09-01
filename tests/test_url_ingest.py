@@ -257,3 +257,21 @@ async def test_the_reader_is_still_the_fallback_when_a_fetch_is_refused(allow_al
 
     assert ext == "md"
     assert b"# Article" in content
+
+
+# --- a bot wall is not a document ---
+
+def test_a_verification_page_is_recognised():
+    from utils.url_fetch import looks_like_a_bot_wall
+    assert looks_like_a_bot_wall("Loader Please wait while your request is being verified...")
+    assert looks_like_a_bot_wall("Just a moment...\nEnable JavaScript and cookies to continue")
+
+
+def test_a_real_document_is_not_mistaken_for_one():
+    """Length is the guard: a real document that quotes such a phrase is long."""
+    from utils.url_fetch import looks_like_a_bot_wall
+    long_doc = ("This agreement is made under the Residential Tenancies Act 1997. " * 80
+                + " The site said please wait while your request is being verified.")
+    assert not looks_like_a_bot_wall(long_doc)
+    assert not looks_like_a_bot_wall("")
+    assert not looks_like_a_bot_wall("Residential tenancy agreement, section 26.")

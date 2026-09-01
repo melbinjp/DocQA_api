@@ -25,7 +25,8 @@ os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 
 from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source, load_source_pages
-from utils.url_fetch import fetch_url_document, is_safe_url_async
+from utils.url_fetch import (fetch_url_document, is_safe_url_async,
+                             looks_like_a_bot_wall)
 from utils.prompting import build_manifest, label_chunk
 from utils.vision import (MAX_VISION_PAGES, pages_for_vision,
                           transcribe_pages, wrap_transcript)
@@ -403,6 +404,16 @@ async def ingest(session_id: str, request: Request):
         except Exception as e:
             vision_note = f" The page reader could not run ({type(e).__name__}: {e})."
             print(f"Vision pass skipped: {e}")
+
+    # A bot wall is not a document. Extracted text that reads as a challenge
+    # page means we fetched the site's gate, not the file, and ingesting it
+    # produces a session that claims to hold one thing and holds another.
+    if url and pages and looks_like_a_bot_wall("\n".join(t for _, t in pages)):
+        raise HTTPException(
+            status_code=400,
+            detail=("That site returned a bot check rather than the document. "
+                    "Download the file and upload it here instead."),
+        )
 
     if (not pages or not any(t and t.strip() for _, t in pages)) and not vision_transcripts:
         # Say why, when there is a why. A scanned PDF that fails silently is

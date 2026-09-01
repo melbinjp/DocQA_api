@@ -56,6 +56,43 @@ _CONTENT_TYPE_EXT = {
 
 _HTML_TYPES = {"text/html", "application/xhtml+xml"}
 
+# Phrases that mean a bot wall answered instead of the document.
+#
+# nahc.org.au serves a Victorian tenancy agreement to a browser and a
+# verification page to this service. Fetching it produced a document whose text
+# was "Please wait while your request is being verified", carrying the original
+# URL as its source, and the page reader then faithfully transcribed a balance
+# sheet out of the placeholder PDF behind the wall. The result is the worst kind
+# of wrong: a session that says it holds a tenancy agreement and holds a
+# stranger's financial table, with nothing anywhere saying otherwise.
+#
+# Better to refuse and say to upload the file, which works: the same PDF
+# uploaded gives 71 chunks of the real agreement.
+_BOT_WALL_MARKERS = (
+    "please wait while your request is being verified",
+    "checking your browser before accessing",
+    "enable javascript and cookies to continue",
+    "verify you are human",
+    "just a moment...",
+    "attention required! | cloudflare",
+    "ddos protection by",
+)
+
+# Only text this short can be a wall. A real document that happens to quote one
+# of those phrases will be far longer than a challenge page.
+_BOT_WALL_MAX_CHARS = 2500
+
+
+def looks_like_a_bot_wall(text: str) -> bool:
+    """True if `text` reads as a challenge page rather than a document."""
+    if not text:
+        return False
+    stripped = text.strip()
+    if len(stripped) > _BOT_WALL_MAX_CHARS:
+        return False
+    lowered = stripped.lower()
+    return any(marker in lowered for marker in _BOT_WALL_MARKERS)
+
 _MAX_REDIRECTS = 5
 
 
