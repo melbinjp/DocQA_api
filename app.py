@@ -27,6 +27,7 @@ from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source, load_source_pages
 from utils.url_fetch import fetch_url_document, is_safe_url_async
 from utils.prompting import build_manifest, label_chunk
+from utils.vision import merge as vision_merge, pages_for_vision, transcribe_pages
 from utils.splitter import split_text, split_pages, index_entries
 from utils.exceptions import DocumentLoaderError
 from rag_session import RAGSession
@@ -121,6 +122,11 @@ LLM_TIMEOUT_SECONDS = 30.0
 # The merge across documents sorts by score, and that only became sound when the
 # index moved to cosine: the old 1/(1+l2) score was magnitude-biased, so scores
 # from two documents with different chunk lengths were not on the same scale.
+# Looking at a page costs a model call, so it is off by default for anyone
+# running this without the quota for it, and on here because the alternative is
+# rejecting every scanned document outright.
+VISION_ENABLED = os.getenv("VISION_ENABLED", "1") not in ("0", "false", "False")
+
 RETRIEVE_PER_DOC = 8
 CONTEXT_CHUNKS = 8
 
@@ -354,7 +360,25 @@ async def ingest(session_id: str, request: Request):
     try:
         pages = load_source_pages(content, source_ext)
     except DocumentLoaderError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # Hold the failure rather than raising it. For a PDF this is usually a
+        # scan, which has no text layer to extract and which the vision pass
+        # below can read. If that finds nothing either, the error is raised then.
+        if source_ext.lower().strip(".") != "pdf":
+            raise HTTPException(status_code=400, detail=str(e))
+        pages = []
+
+    # Look at the pages a text extractor cannot read: scans, charts, and tables
+    # it mangles. Additive, and never allowed to fail the ingest on its own.
+    if source_ext.lower().strip(".") == "pdf" and VISION_ENABLED:
+        try:
+            targets = await asyncio.to_thread(pages_for_vision, content)
+            if targets:
+                transcripts = await transcribe_pages(ai_client, MODEL_NAME, targets)
+                if transcripts:
+                    pages = vision_merge(pages, transcripts)
+                    print(f"Vision read {len(transcripts)} of {len(targets)} pages.")
+        except Exception as e:
+            print(f"Vision pass skipped: {e}")
 
     if not pages or not any(t and t.strip() for _, t in pages):
         raise HTTPException(status_code=400, detail="Could not extract any text from the provided source.")
