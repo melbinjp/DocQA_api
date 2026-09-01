@@ -369,19 +369,33 @@ async def ingest(session_id: str, request: Request):
 
     # Look at the pages a text extractor cannot read: scans, charts, and tables
     # it mangles. Additive, and never allowed to fail the ingest on its own.
+    vision_note = ""
     if source_ext.lower().strip(".") == "pdf" and VISION_ENABLED:
         try:
             targets = await asyncio.to_thread(pages_for_vision, content)
             if targets:
-                transcripts = await transcribe_pages(ai_client, MODEL_NAME, targets)
+                transcripts, vision_errors = await transcribe_pages(
+                    ai_client, MODEL_NAME, targets
+                )
                 if transcripts:
                     pages = vision_merge(pages, transcripts)
-                    print(f"Vision read {len(transcripts)} of {len(targets)} pages.")
+                print(f"Vision read {len(transcripts)} of {len(targets)} pages. "
+                      f"errors={vision_errors[:3]}")
+                if not transcripts and vision_errors:
+                    vision_note = (f" The page reader was tried on {len(targets)} "
+                                   f"pages and returned nothing ({vision_errors[0]}).")
         except Exception as e:
+            vision_note = f" The page reader could not run ({type(e).__name__}: {e})."
             print(f"Vision pass skipped: {e}")
 
     if not pages or not any(t and t.strip() for _, t in pages):
-        raise HTTPException(status_code=400, detail="Could not extract any text from the provided source.")
+        # Say why, when there is a why. A scanned PDF that fails silently is
+        # indistinguishable from an unsupported one, and neither the user nor
+        # anyone debugging it can tell which they have.
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract any text from the provided source." + vision_note,
+        )
 
     page_chunks = split_pages(pages)
     chunks = [c["text"] for c in page_chunks]

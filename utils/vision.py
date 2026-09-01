@@ -23,9 +23,17 @@ exception is a page with no text at all, where there is nothing to overwrite.
 import asyncio
 import io
 
-# Rendering resolution. 170 DPI keeps 8pt table digits legible without producing
-# images so large that upload time dominates the request.
-RENDER_DPI = 170
+# Rendering resolution. 140 DPI keeps 8pt table digits legible and keeps a page
+# small. Measured on page 9 of Attention Is All You Need: 341KB as PNG at 170
+# DPI, 243KB as JPEG at 140. Both are modest, so size was never the reason the
+# first version of this returned nothing on every page, and an earlier comment
+# here claiming 8MB pages was wrong.
+RENDER_DPI = 140
+
+# JPEG rather than PNG, because a rendered page is a photograph of text and JPEG
+# is the format for that. A third off, at a quality difference no reader sees.
+RENDER_QUALITY = 82
+RENDER_MIME = "image/jpeg"
 
 # A page with less text than this, relative to nothing at all, is either scanned
 # or almost entirely picture. 180 characters is roughly two lines: a page number
@@ -127,7 +135,7 @@ def pages_for_vision(raw: bytes, max_pages: int = MAX_VISION_PAGES):
         for number, reason in chosen:
             try:
                 pixmap = doc[number].get_pixmap(dpi=RENDER_DPI)
-                out.append((number + 1, pixmap.tobytes("png"), reason))
+                out.append((number + 1, pixmap.tobytes("jpeg", jpg_quality=RENDER_QUALITY), reason))
             except Exception:
                 continue
         return out
@@ -142,14 +150,19 @@ def pages_for_vision(raw: bytes, max_pages: int = MAX_VISION_PAGES):
 
 
 async def transcribe_pages(client, model: str, targets, timeout: float = 90.0,
-                           concurrency: int = VISION_CONCURRENCY) -> dict:
-    """Look at each rendered page. Returns `{page_number: transcript}`.
+                           concurrency: int = VISION_CONCURRENCY):
+    """Look at each rendered page. Returns `({page_number: transcript}, errors)`.
 
     A page that fails is simply absent from the result. One unreadable page must
     not cost the document.
+
+    The errors come back rather than being swallowed because the first version of
+    this swallowed them, every page failed, and the only symptom was a document
+    that would not ingest for no stated reason. A failure nobody can see is worse
+    than the failure itself.
     """
     if not targets:
-        return {}
+        return {}, []
     from google.genai import types
 
     semaphore = asyncio.Semaphore(concurrency)
@@ -161,29 +174,37 @@ async def transcribe_pages(client, model: str, targets, timeout: float = 90.0,
                     client.aio.models.generate_content(
                         model=model,
                         contents=[
-                            types.Part.from_bytes(data=png, mime_type="image/png"),
-                            VISION_PROMPT,
+                            types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part.from_bytes(data=png, mime_type=RENDER_MIME),
+                                    types.Part.from_text(text=VISION_PROMPT),
+                                ],
+                            )
                         ],
                     ),
                     timeout=timeout,
                 )
-                return page_number, (response.text or "").strip()
-            except Exception:
-                return page_number, ""
+                return page_number, (response.text or "").strip(), None
+            except Exception as e:
+                return page_number, "", f"{type(e).__name__}: {str(e)[:160]}"
 
     results = await asyncio.gather(
         *(one(number, png) for number, png, _ in targets),
         return_exceptions=True,
     )
 
-    out = {}
+    out, errors = {}, []
     for item in results:
         if isinstance(item, Exception):
+            errors.append(f"{type(item).__name__}: {str(item)[:160]}")
             continue
-        page_number, text = item
+        page_number, text, error = item
         if text:
             out[page_number] = text
-    return out
+        elif error:
+            errors.append(error)
+    return out, errors
 
 
 def merge(pages, transcripts: dict):

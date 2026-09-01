@@ -67,8 +67,11 @@ def test_rendered_pages_come_back_as_images_in_page_order():
     raw = make_pdf(["", "", ""])
     chosen = pages_for_vision(raw)
     assert [n for n, _, _ in chosen] == [1, 2, 3]
-    for _, png, _ in chosen:
-        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    for _, image, _ in chosen:
+        assert image[:2] == b"\xff\xd8", "not a JPEG"
+        # Keeps a page small enough that several in one ingest is not
+        # itself the failure.
+        assert len(image) < 2_000_000, f"{len(image)} bytes is too big to send"
 
 
 def test_bytes_that_are_not_a_pdf_select_nothing_rather_than_raising():
@@ -110,3 +113,27 @@ def test_pages_come_back_in_order_after_merging():
 def test_the_low_text_threshold_is_small_enough_not_to_catch_real_pages():
     """A page of genuine prose must not be mistaken for a scan."""
     assert LOW_TEXT_THRESHOLD < 400
+
+
+@pytest.mark.asyncio
+async def test_no_targets_returns_an_empty_result_and_no_errors():
+    from utils.vision import transcribe_pages
+    assert await transcribe_pages(None, "m", []) == ({}, [])
+
+
+@pytest.mark.asyncio
+async def test_a_failing_page_reports_why_instead_of_vanishing():
+    """The first version swallowed these, every page failed, and the only
+    symptom was a document that would not ingest for no stated reason."""
+    from utils.vision import transcribe_pages
+
+    class Boom:
+        class aio:
+            class models:
+                @staticmethod
+                async def generate_content(**kwargs):
+                    raise RuntimeError("model refused the image")
+
+    out, errors = await transcribe_pages(Boom(), "m", [(1, b"jpegbytes", "no-text")])
+    assert out == {}
+    assert errors and "model refused the image" in errors[0]
