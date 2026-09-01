@@ -44,6 +44,17 @@ LOW_TEXT_THRESHOLD = 180
 # request, so this is the ceiling on both wall-clock and quota for one ingest.
 MAX_VISION_PAGES = 25
 
+# Which pages are worth spending a request on.
+#
+# "scanned" is the default because that is where measurement found a real
+# failure: a PDF with no text layer was rejected outright, while tables and
+# figures already answered 16 of 16 questions from extracted text, captions and
+# surrounding prose. Looking at every table and figure costs a request each and
+# buys, on the evidence so far, nothing. "all" turns that on for anyone whose
+# documents are worse than these papers, which many are.
+SCOPE_SCANNED = "scanned"
+SCOPE_ALL = "all"
+
 # Concurrent vision requests. Enough to keep a long document moving, low enough
 # not to trip rate limits on a free tier.
 VISION_CONCURRENCY = 4
@@ -102,7 +113,8 @@ def _page_needs_vision(page, text: str) -> str | None:
 _PRIORITY = {"no-text": 0, "table": 1, "image": 2}
 
 
-def pages_for_vision(raw: bytes, max_pages: int = MAX_VISION_PAGES):
+def pages_for_vision(raw: bytes, max_pages: int = MAX_VISION_PAGES,
+                     scope: str = SCOPE_SCANNED):
     """`[(page_number, png_bytes, reason), ...]`, one-based, best first.
 
     Returns [] rather than raising if the bytes are not a PDF this can open;
@@ -124,7 +136,7 @@ def pages_for_vision(raw: bytes, max_pages: int = MAX_VISION_PAGES):
             except Exception:
                 text = ""
             reason = _page_needs_vision(page, text)
-            if reason:
+            if reason and (scope == SCOPE_ALL or reason == "no-text"):
                 candidates.append((number, reason))
 
         candidates.sort(key=lambda c: (_PRIORITY.get(c[1], 9), c[0]))
@@ -149,7 +161,7 @@ def pages_for_vision(raw: bytes, max_pages: int = MAX_VISION_PAGES):
                 pass
 
 
-async def transcribe_pages(client, model: str, targets, timeout: float = 90.0,
+async def transcribe_pages(client, model, targets, timeout: float = 90.0,
                            concurrency: int = VISION_CONCURRENCY):
     """Look at each rendered page. Returns `({page_number: transcript}, errors)`.
 
@@ -165,14 +177,19 @@ async def transcribe_pages(client, model: str, targets, timeout: float = 90.0,
         return {}, []
     from google.genai import types
 
+    # A quota error on the first model is not a failure, it is a queue. The
+    # answering path has walked a ladder of models on 429 since before this
+    # existed; the reader had none and died on the first one. Measured
+    # 2026-09-01: every page came back "429 RESOURCE_EXHAUSTED" while ordinary
+    # questions were still being answered fine on the same key.
+    models = [model] if isinstance(model, str) else list(model)
+
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def one(page_number: int, png: bytes):
-        async with semaphore:
-            try:
-                response = await asyncio.wait_for(
+    async def attempt(page_number: int, png: bytes, model_name: str):
+        return await asyncio.wait_for(
                     client.aio.models.generate_content(
-                        model=model,
+                        model=model_name,
                         contents=[
                             types.Content(
                                 role="user",
@@ -185,9 +202,21 @@ async def transcribe_pages(client, model: str, targets, timeout: float = 90.0,
                     ),
                     timeout=timeout,
                 )
-                return page_number, (response.text or "").strip(), None
-            except Exception as e:
-                return page_number, "", f"{type(e).__name__}: {str(e)[:160]}"
+
+    async def one(page_number: int, png: bytes):
+        async with semaphore:
+            last_error = None
+            for position, model_name in enumerate(models):
+                try:
+                    response = await attempt(page_number, png, model_name)
+                    return page_number, (response.text or "").strip(), None
+                except Exception as e:
+                    last_error = f"{type(e).__name__}: {str(e)[:160]}"
+                    # Back off before the next model, so a burst of pages does
+                    # not walk the whole ladder at once and exhaust it too.
+                    if position + 1 < len(models):
+                        await asyncio.sleep(1.0 * (position + 1))
+            return page_number, "", last_error
 
     results = await asyncio.gather(
         *(one(number, png) for number, png, _ in targets),

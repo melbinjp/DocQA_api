@@ -137,3 +137,60 @@ async def test_a_failing_page_reports_why_instead_of_vanishing():
     out, errors = await transcribe_pages(Boom(), "m", [(1, b"jpegbytes", "no-text")])
     assert out == {}
     assert errors and "model refused the image" in errors[0]
+
+
+@pytest.mark.asyncio
+async def test_the_reader_walks_the_model_ladder_on_failure():
+    """A quota error on the first model is a queue, not a dead end.
+
+    Measured 2026-09-01: every page came back "429 RESOURCE_EXHAUSTED" from the
+    primary model while ordinary questions were still being answered fine on the
+    same key, because the answering path falls back and the reader did not.
+    """
+    from utils.vision import transcribe_pages
+
+    tried = []
+
+    class Ladder:
+        class aio:
+            class models:
+                @staticmethod
+                async def generate_content(model=None, **kwargs):
+                    tried.append(model)
+                    if model == "first":
+                        raise RuntimeError("429 RESOURCE_EXHAUSTED")
+                    class R:
+                        text = "transcribed by the second model"
+                    return R()
+
+    out, errors = await transcribe_pages(
+        Ladder(), ["first", "second"], [(1, b"img", "no-text")], timeout=5
+    )
+    assert tried == ["first", "second"]
+    assert out == {1: "transcribed by the second model"}
+    assert errors == []
+
+
+@pytest.mark.asyncio
+async def test_a_single_model_name_still_works():
+    from utils.vision import transcribe_pages
+
+    class Ok:
+        class aio:
+            class models:
+                @staticmethod
+                async def generate_content(**kwargs):
+                    class R:
+                        text = "read"
+                    return R()
+
+    out, _ = await transcribe_pages(Ok(), "only-model", [(2, b"img", "no-text")])
+    assert out == {2: "read"}
+
+
+def test_by_default_only_scanned_pages_are_sent():
+    """Tables and figures answered 16 of 16 from text, so spending a request on
+    them buys nothing on the evidence available."""
+    raw = make_pdf(["", "word " * 200])
+    reasons = [r for _, _, r in pages_for_vision(raw)]
+    assert reasons == ["no-text"]

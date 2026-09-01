@@ -27,7 +27,8 @@ from sentence_transformers import SentenceTransformer
 from utils.loaders import load_source, load_source_pages
 from utils.url_fetch import fetch_url_document, is_safe_url_async
 from utils.prompting import build_manifest, label_chunk
-from utils.vision import merge as vision_merge, pages_for_vision, transcribe_pages
+from utils.vision import (MAX_VISION_PAGES, merge as vision_merge,
+                          pages_for_vision, transcribe_pages)
 from utils.splitter import split_text, split_pages, index_entries
 from utils.exceptions import DocumentLoaderError
 from rag_session import RAGSession
@@ -126,6 +127,11 @@ LLM_TIMEOUT_SECONDS = 30.0
 # running this without the quota for it, and on here because the alternative is
 # rejecting every scanned document outright.
 VISION_ENABLED = os.getenv("VISION_ENABLED", "1") not in ("0", "false", "False")
+
+# Which pages get looked at. Default is scanned pages only, because that is the
+# case measurement showed is a hard failure; tables and figures already answer
+# correctly from extracted text. VISION_SCOPE=all spends a request on those too.
+VISION_SCOPE = os.getenv("VISION_SCOPE", "scanned")
 
 RETRIEVE_PER_DOC = 8
 CONTEXT_CHUNKS = 8
@@ -372,10 +378,14 @@ async def ingest(session_id: str, request: Request):
     vision_note = ""
     if source_ext.lower().strip(".") == "pdf" and VISION_ENABLED:
         try:
-            targets = await asyncio.to_thread(pages_for_vision, content)
+            targets = await asyncio.to_thread(
+                pages_for_vision, content, MAX_VISION_PAGES, VISION_SCOPE
+            )
             if targets:
+                # The same ladder the answering path walks, so a quota error on
+                # the first model is a queue rather than a dead end.
                 transcripts, vision_errors = await transcribe_pages(
-                    ai_client, MODEL_NAME, targets
+                    ai_client, [MODEL_NAME] + FALLBACK_MODELS, targets
                 )
                 if transcripts:
                     pages = vision_merge(pages, transcripts)
