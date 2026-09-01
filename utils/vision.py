@@ -55,6 +55,21 @@ MAX_VISION_PAGES = 25
 SCOPE_SCANNED = "scanned"
 SCOPE_ALL = "all"
 
+# Under "scanned", a document qualifies only if most of it has no text. The rule
+# used to be per page, which is not the same thing: a 75-page paper has figure
+# pages with almost no text on them, so GPT-3 sent three pages to be read even
+# though it is plainly not a scan. Those three, against a three-model ladder with
+# a ninety second timeout on each rung, are what turned a thirty second ingest
+# into a 504. A document is a scan or it is not; individual bare pages inside a
+# text document are figures, and figures already answer from their captions.
+SCANNED_PAGE_FRACTION = 0.5
+
+# The whole pass gets this long, however many pages it wanted. Ingest happens
+# inside one HTTP request, and a request that never returns is worse than a
+# document that is merely harder to search: the second is degraded, the first is
+# broken. Whatever has been read when the budget runs out is what gets used.
+VISION_BUDGET_SECONDS = 75.0
+
 # Concurrent vision requests. Enough to keep a long document moving, low enough
 # not to trip rate limits on a free tier.
 VISION_CONCURRENCY = 4
@@ -139,6 +154,11 @@ def pages_for_vision(raw: bytes, max_pages: int = MAX_VISION_PAGES,
             if reason and (scope == SCOPE_ALL or reason == "no-text"):
                 candidates.append((number, reason))
 
+        if scope != SCOPE_ALL:
+            blank = sum(1 for _, reason in candidates if reason == "no-text")
+            if not doc.page_count or blank / doc.page_count < SCANNED_PAGE_FRACTION:
+                return []
+
         candidates.sort(key=lambda c: (_PRIORITY.get(c[1], 9), c[0]))
         chosen = candidates[:max_pages]
         chosen.sort(key=lambda c: c[0])
@@ -161,8 +181,9 @@ def pages_for_vision(raw: bytes, max_pages: int = MAX_VISION_PAGES,
                 pass
 
 
-async def transcribe_pages(client, model, targets, timeout: float = 90.0,
-                           concurrency: int = VISION_CONCURRENCY):
+async def transcribe_pages(client, model, targets, timeout: float = 40.0,
+                           concurrency: int = VISION_CONCURRENCY,
+                           budget: float = VISION_BUDGET_SECONDS):
     """Look at each rendered page. Returns `({page_number: transcript}, errors)`.
 
     A page that fails is simply absent from the result. One unreadable page must
@@ -218,10 +239,16 @@ async def transcribe_pages(client, model, targets, timeout: float = 90.0,
                         await asyncio.sleep(1.0 * (position + 1))
             return page_number, "", last_error
 
-    results = await asyncio.gather(
-        *(one(number, png) for number, png, _ in targets),
-        return_exceptions=True,
-    )
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(one(number, png) for number, png, _ in targets),
+                return_exceptions=True,
+            ),
+            timeout=budget,
+        )
+    except asyncio.TimeoutError:
+        return {}, [f"the page reader ran past its {budget:.0f}s budget"]
 
     out, errors = {}, []
     for item in results:

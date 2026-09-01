@@ -218,3 +218,49 @@ def test_every_chunk_of_a_transcript_is_marked_not_just_the_first():
 def test_marking_a_chunk_does_not_change_what_it_says():
     body = "Row: base 6 512 2048 8 64 64 0.1 0.1 100K 4.92 25.8 65"
     assert body in wrap_transcript(body)
+
+
+# --- a document is a scan, or it is not; bare pages inside a text document
+#     are figures, and figures already answer from their captions ---
+
+def test_a_text_document_with_a_few_bare_pages_is_not_a_scan():
+    """The regression that made a 75-page paper stop ingesting at all.
+
+    GPT-3 has figure pages with almost no text, so a per-page rule sent three of
+    them to be read. Three pages against a three-model ladder with a long
+    timeout on each rung turned a thirty second ingest into a 504.
+    """
+    raw = make_pdf(["word " * 200] * 8 + [""] * 2)
+    assert pages_for_vision(raw) == []
+
+
+def test_a_document_that_really_is_scanned_still_qualifies():
+    raw = make_pdf([""] * 6 + ["word " * 200] * 2)
+    assert len(pages_for_vision(raw)) == 6
+
+
+def test_the_all_scope_ignores_the_document_level_gate():
+    from utils.vision import SCOPE_ALL
+    raw = make_pdf(["word " * 200] * 8 + [""] * 2)
+    assert len(pages_for_vision(raw, scope=SCOPE_ALL)) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_reader_gives_up_at_its_budget_rather_than_hanging():
+    """Ingest happens inside one HTTP request. A request that never returns is
+    worse than a document that is merely harder to search."""
+    import asyncio
+    from utils.vision import transcribe_pages
+
+    class Slow:
+        class aio:
+            class models:
+                @staticmethod
+                async def generate_content(**kwargs):
+                    await asyncio.sleep(30)
+
+    out, errors = await transcribe_pages(
+        Slow(), "m", [(1, b"img", "no-text")], timeout=20, budget=0.4
+    )
+    assert out == {}
+    assert errors and "budget" in errors[0]
