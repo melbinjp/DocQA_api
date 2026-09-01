@@ -166,6 +166,19 @@ async def generate_rag_response(query: str, context_chunks: List[str], stream: b
         "documents, not from excerpts: a reference list inside a paper names "
         "other works and is not itself a document in this session. "
         "If the excerpts do not answer the question, say so instead of guessing. "
+        # Ask for the citation in the answer, not only beside it.
+        #
+        # The page was reaching the reader in the sources list underneath and
+        # almost never in the sentence that made the claim, so anyone reading
+        # only the answer, which is most people, got an unsourced statement and
+        # had to go looking for which of eight excerpts it came from. Citing in
+        # the prose is the difference between an answer you can check and an
+        # answer you have to trust.
+        "Cite where each fact came from, in the sentence that states it, as "
+        "(page 4) or (report.pdf, page 4) when more than one document is "
+        "loaded. Use only the document names and page numbers written in the "
+        "headings above the excerpts. Never invent or guess a page number, and "
+        "if an excerpt's heading gives no page, name the document alone. "
         "If the user asks in a language other than English, respond in their language.\n\n"
         f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"
     )
